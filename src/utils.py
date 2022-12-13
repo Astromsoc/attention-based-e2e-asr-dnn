@@ -129,9 +129,15 @@ def collate_train_dev(
     mfccs = [u[0] for u in batch]
     transcripts = [u[1] for u in batch]
 
+    # sort the mfccs given lengths
+    idx = sorted(np.arange(len(mfccs)), key=lambda x: len(mfccs[x]), reverse=True)
+    mfccs = [mfccs[i] for i in idx]
+    transcripts = [transcripts[i] for i in idx]
+
     # obtain original lengths for both mfccs & transcripts
-    mfcc_lens = torch.tensor([len(m) for m in mfccs])
-    transcript_lens = torch.tensor([len(t) for t in transcripts])
+    mfcc_lens = [len(m) for m in mfccs]
+    transcript_lens = [len(t) for t in transcripts]
+
 
     # pad both mfccs & transcripts
     mfccs = pad_sequence(
@@ -140,7 +146,7 @@ def collate_train_dev(
     transcripts = pad_sequence(
         transcripts, batch_first=True, padding_value=trans_padding
     )
-    return mfccs, transcripts, mfcc_lens, transcript_lens
+    return mfccs, transcripts, torch.tensor(mfcc_lens), torch.tensor(transcript_lens)
 
 
 
@@ -158,7 +164,48 @@ def collate_test(
         mfccs, batch_first=True, padding_value=mfcc_padding
     )
     return mfccs, mfcc_lens
+
+
+
+class CosineAnnealingWithWarmup(torch.optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, num_batches,
+                 warmup_epochs=1, max_epochs=10,
+                 init_lr=0.001, min_lr=1e-6):
+        self.optimizer = optimizer
+        # bookkeeping
+        self.num_batches = num_batches
+        self.warmup_epochs = warmup_epochs
+        self.max_epochs = max_epochs
+        self.init_lr = init_lr
+        self.min_lr = min_lr
+        # build up
+        self.build_schedule()
+        # step counter
+        self.step_count = 0
+        
+    def build_schedule(self):
+        total_batches = self.num_batches * self.max_epochs
+        self.total_batches = total_batches
+        self.lr_list = np.zeros((total_batches, ))
+        warmup_batches = int(self.num_batches * self.warmup_epochs)
+        # linear warmup
+        self.lr_list[:warmup_batches] = np.linspace(
+            self.min_lr, self.init_lr, warmup_batches
+        )
+        # cosine annealing
+        left_batches = total_batches - warmup_batches
+        self.lr_list[warmup_batches:] = np.array([self.min_lr + 
+            (self.init_lr - self.min_lr) * math.cos(i * math.pi/ left_batches)
+            for i in range(left_batches)
+        ])
     
+    def step(self):
+        for group in self.optimizer.param_groups:
+            group['lr'] = (self.lr_list[self.step_count] 
+                           if self.step_count <= self.total_batches
+                           else self.min_lr)
+        self.step_count += 1
+
 
 
 def compute_levenshtein(h, y, lh, ly, decoder, LABELS):
@@ -191,6 +238,7 @@ def pay_attention_multihead(att_wgts, epoch: int, root_dir: str='.'):
         Args:
             att_wgts: (num_heads, char_len, enc_len) 
     """
+    att_wgts = att_wgts.transpose((0, 2, 1))
     num_heads = att_wgts.shape[0]
     n_rows = int(math.sqrt(num_heads))
     n_cols = num_heads // n_rows
@@ -206,13 +254,3 @@ def pay_attention_multihead(att_wgts, epoch: int, root_dir: str='.'):
     img_fp = f"{root_dir}/attention-map-epoch{epoch}.png"
     fig.savefig(img_fp, dpi=128)
     print(f"\nAttention map successfully saved to [{img_fp}].\n")
-
-
-
-def greedy_search_tensor(logits_tensor):
-    """
-        greedy search for logits tensor per time step
-        Args:
-            logits_tensor: (batch_size, seq_len, vocab_size)
-    """
-    return logits_tensor[:, :, -1].argmax(dim=-1)

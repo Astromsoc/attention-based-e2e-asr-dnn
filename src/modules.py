@@ -172,7 +172,9 @@ class pyramLockedLSTM(nn.Module):
             p = self.mid_dropout if i < self.plstm_layers - 1 else self.final_dropout
             # add one extra time frame if odd number
             if x.size(1) % 2 != 0:
-                x = torch.cat([x, torch.zeros((batch_size, 1, hidden_dim), requires_grad=False)], dim=1)
+                x = torch.cat([
+                    x, torch.zeros((batch_size, 1, hidden_dim), device=x.device,
+                                    requires_grad=False)], dim=1)
             # concatenate
             x = x.view(batch_size, -1, hidden_dim * 2)
             # lengths change
@@ -214,7 +216,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
                 input_size=self.att_proj_dim + self.dec_emb_dim,
                 hidden_size=self.dec_hidden_dim,
             ),
-             nn.LSTMCell(
+            nn.LSTMCell(
                 # input: [hidden_state, cell_state]
                 input_size=self.dec_hidden_dim,
                 hidden_size=self.dec_hidden_dim,
@@ -232,11 +234,15 @@ class AutoRegDecoderLSTMCell(nn.Module):
         return x * mask
     
     
-    def build_init_hidden(self, batch_size: int):
+    def build_init_hidden(self, batch_size: int, device: str):
         # initial hidden and cell states
         self.init_h = [(
-            torch.zeros((batch_size, self.dec_hidden_dim), requires_grad=True),
-            torch.zeros((batch_size, self.dec_hidden_dim), requires_grad=True)
+            torch.zeros(
+                (batch_size, self.dec_hidden_dim), requires_grad=True, device=device
+            ),
+            torch.zeros(
+                (batch_size, self.dec_hidden_dim), requires_grad=True, device=device
+            )
         ) for _ in range(2)]
         return self.init_h
 
@@ -254,8 +260,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
 
         # initialize the hidden (& cell states) for the initial time step
         if prev_h is None:
-            self.build_init_hidden(prev_e.size(0))
-            prev_h = self.init_h
+            prev_h = self.build_init_hidden(prev_e.size(0), device=prev_e.device)
 
         # iterate
         for i, lstm in enumerate(self.lstms):

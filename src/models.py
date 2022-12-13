@@ -8,7 +8,6 @@ import numpy as np
 import torch.nn as nn
 from torchsummaryX import summary 
 
-from src.utils import greedy_search_tensor
 from src.modules import LockedLSTM, pyramLockedLSTM, AutoRegDecoderLSTMCell
 
 
@@ -95,7 +94,7 @@ class MultiheadCrossAttention(nn.Module):
         self.key_map = nn.Linear(self.encoder_output_dim, self.projection_dim)
         self.value_map = nn.Linear(self.encoder_output_dim, self.projection_dim)
         self.query_map = nn.Linear(self.decoder_hidden_dim, self.projection_dim)
-        # additional linear transformation layer
+        # [optional] additional linear transformation layer
         self.final_map = nn.Linear(self.projection_dim, self.projection_dim)
         # softmax layer for attended value normalization
         self.softmax = nn.Softmax(dim=-1)
@@ -104,7 +103,7 @@ class MultiheadCrossAttention(nn.Module):
 
 
     @staticmethod
-    def build_pad_masks(enc_l, max_len: int=0):
+    def build_pad_masks(enc_l, device: str, max_len: int=0):
         """
             build up masks to ignore padded sections
             Args:
@@ -146,43 +145,43 @@ class MultiheadCrossAttention(nn.Module):
         # [0] batch size
         batch_size = enc_h.size(0)
         # [1] masks for padded sections
-        mask = self.build_pad_masks(enc_l)                                          # (batch_size, max_len)
+        mask = self.build_pad_masks(enc_l, device=enc_h.device)                     # (batch_size, max_len)
 
         # [2] keys and values 
         self.keys = (self.key_map(enc_h)                                            # (batch_size, seq_len, proj_dim)
                          .view(batch_size, -1, self.heads, self.dims_per_head)      # (batch_size, seq_len, num_heads, proj_dims_per_head)
-                         .transpose(1, 2))                                          # (batch_size, num_heads, seq_len, proj_dims_per_head)
+                         .transpose(1, 2)
+                         .transpose(-2, -1))                                        # (batch_size, num_heads, proj_dims_per_head, seq_len)
         self.values = (self.value_map(enc_h)                                        # (batch_size, seq_len, num_heads, proj_dim)
                            .view(batch_size, -1, self.heads, self.dims_per_head)    # (batch_size, seq_len, num_heads, proj_dims_per_head)
                            .transpose(1, 2))                                        # (batch_size, num_heads, seq_len, proj_dims_per_head)
 
         # [3] extend the mask
-        self.masks = mask.unsqueeze(1)                                              # (batch_size, 1, seq_len)
+        self.masks = (mask[:, None, None, :]
+                      .expand((batch_size, self.heads, 1, mask.size(1)))            # (batch_size, num_heads, 1, seq_len)
+                      .to(enc_h.device))                           
     
 
     def forward(self, dec_h, return_wgts: bool=False):
         """
             official forward for the decoder
             Args:
-                dec_h: (batch_size, decoder_hidden_dim)
+                dec_h: (batch_size, decoder_lstm_hidden_dim)
         """
         # [0] batch size
         batch_size = dec_h.size(0)
         # [1] query
         self.queries = (self.query_map(dec_h)                                       # (batch_size, proj_dim)
-                          .view(batch_size, self.heads, self.dims_per_head)         # (batch_size, num_heads, proj_dims_per_head)
-                          .unsqueeze(2))                                            # (batch_size, num_heads, 1, proj_dims_per_head)
+                            .view(batch_size, self.heads, self.dims_per_head)       # (batch_size, num_heads, proj_dims_per_head)
+                            .unsqueeze(-2))                                         # (batch_size, num_heads, 1, proj_dims_per_head)
         # [2] attention weights
-        wgts_prenorm = (torch.matmul(
-            self.keys, self.queries.transpose(-2, -1)                               # (batch_size, num_heads, seq_len, 1)
-        ).squeeze(-1))                                                              # (batch_size, num_heads, seq_len)
+        wgts_prenorm = torch.matmul(self.queries, self.keys)                        # (batch_size, num_heads, 1, seq_len)
         #     turn padded sections into negative infinity
         min_val = torch.finfo(wgts_prenorm.dtype).min
-        wgts_prenorm = wgts_prenorm.masked_fill(self.masks, min_val)                # (batch_size, num_heads, seq_len)
+        wgts_prenorm = wgts_prenorm.masked_fill(self.masks, min_val)                # (batch_size, num_heads, 1, seq_len)
         #     apply softmax & zero out trivial vals
         wgts_normed = (self.softmax(wgts_prenorm /  self.norm_factor)
-                           .masked_fill(self.masks, 0.0)                            # (batch_size, num_heads, seq_len)
-                           .unsqueeze(-2))                                          # (batch_size, num_heads, 1, seq_len)
+                           .masked_fill(self.masks, 0.0))                           # (batch_size, num_heads, 1, seq_len)
         # [3] attended values
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
                            .squeeze(-2).contiguous()                                # (batch_size, num_heads, proj_dims_per_head)
@@ -287,9 +286,11 @@ class Speller(nn.Module):
         return x * mask
     
 
-    def build_init_query(self, batch_size: int):
+    def build_init_query(self, batch_size: int, device: str):
         # initial query: all 0s
-        self.init_query = torch.zeros((batch_size, self.dec_lstm_hidden_dim), requires_grad=True)
+        self.init_query = torch.zeros(
+            (batch_size, self.dec_lstm_hidden_dim), requires_grad=True, device=device
+        )
         return self.init_query
         
 
@@ -302,14 +303,14 @@ class Speller(nn.Module):
                 teacher_forcing_rate: (float) how much of teacher forcing to apply
         """
         batch_size, enc_max_len, enc_dim = enc_h.size()
-        dec_max_len = dec_y.size(-1)
 
         # teacher forcing during training
         if self.training:
+            dec_max_len = dec_y.size(-1)
             steps = dec_max_len
             gold_label_emb = self.char_emb(dec_y)                                   # (batch_size, dec_seq_len, dec_emb_dim)
         else:
-            steps = self.MAX_STEPS
+            steps = self.CHR_MAX_STEPS
         
         # all prediction logits saved in one list
         pred_logits = None
@@ -327,13 +328,13 @@ class Speller(nn.Module):
         char = torch.full((batch_size, ), fill_value=self.CHR_SOS_IDX, 
                            dtype=torch.long, device=enc_h.device)                   # (batch_size, )
         # initial hidden states
-        prev_h = self.lstms.build_init_hidden(batch_size)
+        prev_h = self.lstms.build_init_hidden(batch_size, enc_h.device)
         # initial query & context
-        init_query = self.build_init_query(batch_size)
+        init_query = self.build_init_query(batch_size, enc_h.device)
         context, att_wgts = self.attention(init_query, return_wgts=True)
         
         # bookkeeping
-        att_wgts_list = [att_wgts[0].detach().cpu().numpy().copy()]     # (batch_size, num_heads, proj_dims_per_head)
+        att_wgts_list = [att_wgts[0].detach().cpu().numpy().copy()]                 # (batch_size, num_heads, proj_dims_per_head)
         
         # loop
         for t in range(steps):
@@ -341,7 +342,7 @@ class Speller(nn.Module):
             char_emb = self.char_emb(char)                                          # (batch_size, dec_emb_dim)
             # teacher forcing if wanted
             if self.training and t > 0:
-                if torch.rand(1).item() < teacher_forcing_rate:
+                if torch.rand(1).item() <= teacher_forcing_rate:
                     char_emb = gold_label_emb[:, t, :]                              # (batch_size, dec_emb_dim)
             
             # embedding dropout
@@ -365,9 +366,10 @@ class Speller(nn.Module):
                            else char_logits.unsqueeze(1))                           # (batch_size, dec_max_len, vocab_size)
             att_wgts_list.append(att_wgts[0].detach().cpu().numpy().copy())         # (num_heads, i, seq_len)
             
+            
             # obtain the char to input for next timestep
             if self.USE_GREEDY:
-                char = greedy_search_tensor(pred_logits)                            # (batch_size, vocab_size)
+                char = pred_logits[:, -1, :].argmax(-1)                             # (batch_size, vocab_size)
             else:
                 # left for beam search (w/ LM rescoring)
                 pass
@@ -392,13 +394,13 @@ class ListenAttendSpell(nn.Module):
         self.listener_configs = listener_configs
         self.speller_configs = speller_configs
         # modules
-        self.lisen = Listener(**self.listener_configs)
+        self.listen = Listener(**self.listener_configs)
         self.spell = Speller(**self.speller_configs)
 
     
-    def forward(self, x, lx, dec_y=None, teacher_forcing_rate: float=0.98):
+    def forward(self, x, lx, dec_y=None, teacher_forcing_rate: float=0.0):
         # listen
-        enc_h, enc_l = self.lisen(x, lx)
+        enc_h, enc_l = self.listen(x, lx)
         # enc_h: (batch_size, enc_max_len, enc_hid_dim * 2); enc_l: (batch_size, )
 
         # spell
@@ -417,6 +419,11 @@ if __name__ == '__main__':
     """
     SEED = 416
     torch.manual_seed(SEED)
+    device = (
+        'cuda' if torch.cuda.is_available() else
+        'mps' if torch.backends.mps.is_available() else
+        'cpu'
+    )
 
     """
         encoder
@@ -476,7 +483,7 @@ if __name__ == '__main__':
         init_dropout=ENC_INIT_DROPOUT,
         mid_dropout=ENC_MID_DROPOUT,
         final_dropout=ENC_FINAL_DROPOUT
-    )
+    ).to(device)
 
     # simulate data
     BATCH_SIZE = 4
@@ -484,6 +491,7 @@ if __name__ == '__main__':
     X = [torch.rand(size=(LX[i], ENC_LSTM_INPUT_DIM)) for i in range(BATCH_SIZE)]
     from torch.nn.utils.rnn import pad_sequence
     X = pad_sequence(X, batch_first=True, padding_value=0)
+    X = X.to(device)
     
     print(f"\n\nModel summary for the encoder pyramidal BiLSTM is:\n{summary(testListener, X, LX)}\n")
     XX, LXX = testListener(X, LX)
@@ -512,6 +520,7 @@ if __name__ == '__main__':
     LY = torch.randint(low=0, high=60, size=(BATCH_SIZE,))
     Y = [torch.randint(low=0, high=DEC_VOCAB_SIZE, size=(ly.int(), )) for ly in LY]
     Y = pad_sequence(Y, batch_first=True, padding_value=CHR_PAD_IDX)
+    Y = Y.to(device)
     
     testSpeller = Speller(
         # attention (encoder -> attention)
@@ -530,7 +539,7 @@ if __name__ == '__main__':
         CHR_MAX_STEPS=CHR_MAX_STEPS,
         CHR_PAD_IDX=CHR_PAD_IDX,
         CHR_SOS_IDX=CHR_SOS_IDX
-    )
+    ).to(device)
 
     print(f"The model architecture of the [Speller] is:\n{summary(testSpeller, XX, LXX, Y, TEACHER_FORCING)}")
     

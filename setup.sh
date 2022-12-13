@@ -1,13 +1,12 @@
 #!/bin/bash
-conda create -n las python=3.9
+yes | conda create -n las python=3.9
 conda activate las
 
 # basic packages
-pip install python-levenshtein torchsummaryX wandb
-pip install numpy matplotlib seaborn
+pip install python-levenshtein torchsummaryX torchaudio wandb
+pip install numpy matplotlib seaborn tqdm pyyaml
 
 # conda installed packages
-yes | conda install torchaudio pytorch -c pytorch
 yes | conda install tmux
 
 # download datasets
