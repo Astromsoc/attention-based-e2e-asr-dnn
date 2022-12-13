@@ -218,7 +218,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
             ),
             nn.LSTMCell(
                 # input: [hidden_state, cell_state]
-                input_size=self.dec_hidden_dim,
+                input_size=self.dec_hidden_dim * 2,
                 hidden_size=self.dec_hidden_dim,
             )
         ])
@@ -232,19 +232,6 @@ class AutoRegDecoderLSTMCell(nn.Module):
             x.size(0), 1, requires_grad=False
         ).bernoulli_(1 - p).div_(1 - p)
         return x * mask
-    
-    
-    def build_init_hidden(self, batch_size: int, device: str):
-        # initial hidden and cell states
-        self.init_h = [(
-            torch.zeros(
-                (batch_size, self.dec_hidden_dim), requires_grad=True, device=device
-            ),
-            torch.zeros(
-                (batch_size, self.dec_hidden_dim), requires_grad=True, device=device
-            )
-        ) for _ in range(2)]
-        return self.init_h
 
 
     def forward(self, prev_e, prev_c, prev_h=None):
@@ -256,11 +243,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
         """
         # original inputs: character emb & context from last time step
         prev_ec = torch.cat([prev_e, prev_c], dim=-1)                   
-        # (batch_size, dec_emb_dim + proj_dim + dec_hidden_dim)
-
-        # initialize the hidden (& cell states) for the initial time step
-        if prev_h is None:
-            prev_h = self.build_init_hidden(prev_e.size(0), device=prev_e.device)
+        # (batch_size, dec_emb_dim + proj_dim)
 
         # iterate
         for i, lstm in enumerate(self.lstms):
@@ -268,7 +251,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
             # apply only to the output of the 1st lstm cell
             if i == 0:
                 # encode respectivly
-                prev_ec = self.locked_dropout(prev_h[i][0], self.dec_mid_dropout)
+                prev_ec = self.locked_dropout(torch.cat(prev_h[i], dim=-1), self.dec_mid_dropout)
 
         return prev_h
         # List[(h, c)]

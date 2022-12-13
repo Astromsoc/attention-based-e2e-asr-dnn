@@ -1,1 +1,96 @@
+# filepaths
+# ------------------------------------------------
+TRN_FOLDER: mini/train-clean-100
+DEV_FOLDER: mini/dev-clean
+TST_FOLDER: data/test-clean
+EXP_FOLDER: experiments
 
+# training
+# ------------------------------------------------
+seed: 11785
+epochs: 30
+batch_size: 48
+num_workers: 12
+accu_grad: 8
+grad_norm: 100.0
+tf_rate: 1.0
+max_savings: 3
+
+# wandb
+# ------------------------------------------------
+wandb:
+  use: false
+  configs:
+    project: ''
+    reinit: true
+    entity: ''
+
+# configurations to train the model
+# ------------------------------------------------
+model:
+  tag: base-LAS
+  configs:
+    listener_configs:
+      input_dim: 15
+      uniform_hidden_dim: 64 # 256
+      lstm_layers: 1
+      plstm_layers: 3
+      bidirectional: true
+      init_dropout: 0.1
+      mid_dropout: 0.1
+      final_dropout: 0.1
+    speller_configs:
+      # encoder + attention
+      att_proj_dim: 128 # 512
+      att_heads: 1
+      att_dropout: 0.1
+      # decoder embeddings
+      dec_emb_dim: 256 # 1024
+      dec_emb_dropout: 0.1
+      # decoder lstm cells
+      dec_lstm_hidden_dim: 128 # 512
+      dec_lstm_dropout: 0.1
+      # trivials
+      CHR_MAX_STEPS: 600
+      USE_GREEDY: true
+
+# optimizer
+optimizer:
+  name: adamw
+  configs:
+    lr: 0.001
+    weight_decay: 5.0e-6
+    amsgrad: true
+
+# scalar
+scaler:
+  use: true
+
+# batch scheduler
+batch_scheduler:
+  use: false
+  configs:
+    warmup_epochs: 0.5
+
+# epoch scheduler
+epoch_scheduler:
+  use: false
+
+# tf rate scheduler
+tf_rate_scheduler:
+  use: true
+  configs:
+    high_epochs: 25
+    high_val: 1.0
+    min_val: 0.5
+
+# dropout scheduler
+dropout_scheduler:
+  use: true
+  configs:
+    0: 0.2
+    5: 4
+    20: 1.25
+    40: 0.5
+
+# criterion: fixed to CrossEntropyLoss(reduction='none')

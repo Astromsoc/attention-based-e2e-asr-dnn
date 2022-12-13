@@ -238,7 +238,6 @@ def pay_attention_multihead(att_wgts, epoch: int, root_dir: str='.'):
         Args:
             att_wgts: (num_heads, char_len, enc_len) 
     """
-    att_wgts = att_wgts.transpose((0, 2, 1))
     num_heads = att_wgts.shape[0]
     n_rows = int(math.sqrt(num_heads))
     n_cols = num_heads // n_rows
@@ -246,11 +245,14 @@ def pay_attention_multihead(att_wgts, epoch: int, root_dir: str='.'):
     fig.suptitle(f"Attention Map [Epoch={epoch}]")
     fig.supxlabel('Output Character Count')
     fig.supylabel('Compressed Input Frame Count')
-    for r in range(n_rows):
-        for c in range(n_cols):
-            i = r * n_cols + c
-            sns.heatmap(att_wgts[i], cmap='coolwarm', ax=axes[r, c])
-            axes[r, c].set_title(f"Attention Head #[{i}]")
+    if num_heads == 1:
+        sns.heatmap(att_wgts[0], cmap='coolwarm')
+    else:
+        for r in range(n_rows):
+            for c in range(n_cols):
+                i = r * n_cols + c
+                sns.heatmap(att_wgts[i], cmap='coolwarm', ax=axes[r, c])
+                axes[r, c].set_title(f"Attention Head #[{i}]")
     img_fp = f"{root_dir}/attention-map-epoch{epoch}.png"
     fig.savefig(img_fp, dpi=128)
     print(f"\nAttention map successfully saved to [{img_fp}].\n")

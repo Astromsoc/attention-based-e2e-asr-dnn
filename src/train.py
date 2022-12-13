@@ -308,7 +308,7 @@ class Trainer:
         elif epoch_record['ppl'] <= self.min_ppl['ppl']:
             # update results
             self.min_ppl.update(epoch_record)
-            tag += 'ppl'
+            tag += '-ppl'
         # save model checkpoints (just once)
         if len(tag) > 3:
             # remove extra if exceeding
