@@ -8,6 +8,7 @@ import numpy as np
 import torch.nn as nn
 from torchsummaryX import summary 
 
+from src.utils import pay_attention_multihead
 from src.modules import LockedLSTM, pyramLockedLSTM, AutoRegDecoderLSTMCell
 
 
@@ -153,7 +154,7 @@ class MultiheadCrossAttention(nn.Module):
                       .to(enc_h.device))
 
 
-    def forward(self, dec_h, return_wgts: bool=False):
+    def forward(self, dec_h, return_wgts: bool=False, init_wgts: torch.tensor=None):
         """
             official forward for the decoder
             Args:
@@ -172,6 +173,11 @@ class MultiheadCrossAttention(nn.Module):
         #     apply softmax & zero out trivial vals
         wgts_normed = (self.softmax(wgts_prenorm)
                            .masked_fill(self.masks, 0.0))                           # (batch_size, num_heads, 1, seq_len)
+        # add initial forcing if existed
+        if init_wgts is not None:
+            wgts_normed = self.softmax(wgts_prenorm + 10 * init_wgts).masked_fill(self.masks, 0.0)
+            wgts_normed_original = wgts_normed
+
         # [3] attended values
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
                            .squeeze(-2).contiguous()                                # (batch_size, num_heads, proj_dims_per_head)
@@ -179,7 +185,10 @@ class MultiheadCrossAttention(nn.Module):
         # [4] (optional) final linear layer
         att_values = self.final_map(self.locked_dropout(att_values))                # (batch_size, proj_dim)
 
-        return (att_values, wgts_normed) if return_wgts else att_values
+        if return_wgts:
+            return (att_values, wgts_normed_original) if init_wgts is not None else (att_values, wgts_normed)
+        else: 
+            att_values
 
 
 
@@ -287,7 +296,7 @@ class Speller(nn.Module):
         return x * mask, mask
         
 
-    def forward(self, enc_h, enc_l, dec_y=None, teacher_forcing_rate: float=1):
+    def forward(self, enc_h, enc_l, dec_y=None, teacher_forcing_rate: float=1, init_force: bool=False):
         """
             Args:
                 enc_h: (batch_size, enc_seq_len, enc_output_dim) encoder outputs
@@ -312,6 +321,13 @@ class Speller(nn.Module):
         """
         # attention keys & vals for encoder
         self.attention.wrapup_encodings(enc_h, enc_l)
+
+        if init_force:
+            a_side, b_side = enc_max_len // 4 + 1, steps // 4 + 1
+            areas = a_side * b_side
+            blocks = [torch.ones((a_side, b_side), device=enc_h.device) / areas for _ in range(4)]
+            init_wgts = torch.block_diag(*blocks)[:enc_max_len, :steps]
+            init_wgts /= init_wgts.sum(dim=1)
 
         """
             priors: t = -1
@@ -350,7 +366,10 @@ class Speller(nn.Module):
             # input for decoder: char emb + context, prev step
             hiddens = self.lstms(char_emb, context, hiddens)
             # context
-            context, att_wgts = self.attention(hiddens[-1][0], return_wgts=True)
+            init_wgts_slice = None
+            if init_force:
+                init_wgts_slice = init_wgts[:, t].expand(batch_size, self.att_heads, 1, enc_max_len)
+            context, att_wgts = self.attention(hiddens[-1][0], return_wgts=True, init_wgts=init_wgts_slice)
             # (batch_size, proj_dim), (batch_size, num_heads, 1, enc_seq_len)
         
             # concatenate last layer hidden states w/ context for char network to make a decision
@@ -397,13 +416,13 @@ class ListenAttendSpell(nn.Module):
         self.spell = Speller(**self.speller_configs)
 
     
-    def forward(self, x, lx, dec_y=None, teacher_forcing_rate: float=0.0):
+    def forward(self, x, lx, dec_y=None, teacher_forcing_rate: float=0.0, init_force: bool=False):
         # listen
         enc_h, enc_l = self.listen(x, lx)
         # enc_h: (batch_size, enc_max_len, enc_hid_dim * 2); enc_l: (batch_size, )
 
         # spell
-        pred_logits, att_wgts_list = self.spell(enc_h, enc_l, dec_y, teacher_forcing_rate)
+        pred_logits, att_wgts_list = self.spell(enc_h, enc_l, dec_y, teacher_forcing_rate, init_force)
         # pred_logits: (batch_size, dec_max_len, num_chars); att_wgts_list: (num_heads, out_len, in_len)
 
         return pred_logits, att_wgts_list 

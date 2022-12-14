@@ -38,6 +38,7 @@ class Trainer:
             device,
             accu_grad: int=3,
             grad_norm: float=5.0,
+            eval_ld_interval: int=4,
             SOS_IDX: int=0,
             EOS_IDX: int=29
         ):
@@ -54,6 +55,8 @@ class Trainer:
         self.device = device
         self.accu_grad = accu_grad
         self.grad_norm = grad_norm
+        self.eval_ld_interval = 4
+        self.init_force = self.trncfgs.init_force
         self.SOS_IDX = SOS_IDX
         self.EOS_IDX = EOS_IDX
         # take vocab_size out for convenience
@@ -94,6 +97,8 @@ class Trainer:
         # batch bar
         batch_bar = tqdm(total=len(self.trn_loader), dynamic_ncols=True, leave=False, 
                          position=0, desc=f'training epoch[{self.epoch}]...')
+        # whether to apply init diag attention
+        init_force = self.init_force if self.epoch < 10 else False
         # loop
         for i, (x, y, lx, ly) in enumerate(self.trn_loader):
             # remove <sos> in the beginning of ys
@@ -111,7 +116,7 @@ class Trainer:
             # feed in the model
             if self.scaler:
                 with torch.cuda.amp.autocast():
-                    pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate)
+                    pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate, init_force)
                     # compute loss
                     loss = (self.criterion(
                         pred_logits.view(-1, self.vocab_size),                      # (batch_size * dec_max_len, vocab_size)
@@ -121,7 +126,7 @@ class Trainer:
                     # perplexity
                     ppl = torch.exp(loss)
             else:
-                pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate)
+                pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate, init_force)
                 # compute loss
                 loss = (self.criterion(pred_logits.view(-1, self.vocab_size), y.flatten())
                         * y_mask).sum() / (y_nonpadded_sum * self.accu_grad)
@@ -218,13 +223,14 @@ class Trainer:
                 # greedy search
                 pred_chars = pred_logits.argmax(dim=-1)
                 # compute levenshtein distance
-                total_ld += self.batch_levenshtein(pred_chars, y, ly)
+                if self.epoch % self.eval_ld_interval == 0:
+                    total_ld += self.batch_levenshtein(pred_chars, y, ly)
 
                 # update batch_bar
                 batch_bar.set_postfix(
                     avg_loss=f"{total_loss / (i + 1):.6f}",
                     avg_ppl=f"{total_ppl / (i + 1):.6f}",
-                    avg_ld=f"{total_ld / (i + 1):.6f}",
+                    avg_ld=f"{total_ld / (i + 1) if total_ld else -1:.6f}",
                 )
                 batch_bar.update()
             # finish
@@ -232,7 +238,8 @@ class Trainer:
             del x, y, lx, ly
             torch.cuda.empty_cache()
 
-        return (total_loss / len(self.dev_loader), total_ppl / len(self.dev_loader), total_ld / len(self.dev_loader))
+        return (total_loss / len(self.dev_loader), total_ppl / len(self.dev_loader), 
+                total_ld / len(self.dev_loader) if total_ld else float('inf'))
 
 
     def train_eval(self, epochs: int):
@@ -261,7 +268,9 @@ class Trainer:
             # wandb logging
             if self.trncfgs.wandb.use:
                 wandb.log({'avg_trn_loss': trn_loss, 'avg_trn_ppl': trn_ppl,
-                           'dev_loss': dev_loss, 'dev_ppl': dev_ppl, 'dev_ld': dev_ld,})
+                           'dev_loss': dev_loss, 'dev_ppl': dev_ppl})
+                if dev_ld > 0:
+                    wandb.log({'dev_ld': dev_ld})
             # save model
             self.save_model()
             self.epoch += 1
@@ -423,7 +432,6 @@ def main(args):
 
     # original vocabs
     from src.constants import VOCAB, VOCAB_MAP
-    print(VOCAB, VOCAB_MAP)
 
     if trncfgs_dict['TRN_FOLDER'].startswith('mini'):
         useMini = True
@@ -452,7 +460,7 @@ def main(args):
     tgt_folder = time.strftime("%Y%m%d-%H%M%S")[2:]
     if trncfgs.wandb.use:
         wandb.init(**trncfgs.wandb.configs, config=trncfgs)
-        tgt_folder = wandb.run.names
+        tgt_folder = wandb.run.name
     tgt_folder = f"{trncfgs.EXP_FOLDER}/{tgt_folder}"
     os.makedirs(tgt_folder, exist_ok=True)
     # save the configuration copy into the folder
@@ -550,6 +558,7 @@ def main(args):
         trncfgs=trncfgs, criterion=criterion, scaler=scaler, 
         tf_rate=trncfgs.tf_rate, saving_dir=tgt_folder, device=device, 
         accu_grad=trncfgs.accu_grad, grad_norm=trncfgs.grad_norm, 
+        eval_ld_interval=trncfgs.eval_ld_interval,
         SOS_IDX=VOCAB_MAP['[SOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<sos>'], 
         EOS_IDX=VOCAB_MAP['[EOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<eos>']
     )

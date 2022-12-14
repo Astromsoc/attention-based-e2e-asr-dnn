@@ -14,6 +14,8 @@ batch_size: 96
 num_workers: 4
 accu_grad: 6
 grad_norm: 10.0
+eval_ld_interval: 2
+init_force: true
 tf_rate: 1.0
 max_savings: 3
 use_specaug: true
@@ -23,9 +25,9 @@ use_specaug: true
 wandb:
   use: false
   configs:
-    project: ''
+    project: hw4-test
     reinit: true
-    entity: ''
+    entity: Astromsoc
 
 # configurations to train the model
 # ------------------------------------------------
