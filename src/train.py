@@ -9,7 +9,6 @@ import time
 import yaml
 import torch
 import wandb
-import shutil
 import argparse
 import Levenshtein
 import numpy as np
@@ -19,9 +18,8 @@ from tqdm import tqdm
 from torchsummaryX import summary
 
 from src.utils import *
-from src.constants import *
 from src.models import ListenAttendSpell
-
+from src.constants import VOCAB, VOCAB_MAP
 
 
 class Trainer:
@@ -98,13 +96,16 @@ class Trainer:
                          position=0, desc=f'training epoch[{self.epoch}]...')
         # loop
         for i, (x, y, lx, ly) in enumerate(self.trn_loader):
+            # remove <sos> in the beginning of ys
+            y, ly = y[:, 1:], ly - 1
             # dim stats
             batch_size, dec_max_len = y.size()
             # build masks
             y_mask = (torch.arange(0, dec_max_len, dtype=torch.int64)
                            .unsqueeze(0).expand(batch_size, dec_max_len))           # (batch_size, dec_max_len)
-            y_mask = y_mask >= y_mask.new(ly).unsqueeze(-1)                         # (batch_size, dec_max_len)
-            y_mask = y_mask.to(self.device).flatten()
+            y_mask = y_mask < y_mask.new(ly).unsqueeze(-1)                         # (batch_size, dec_max_len)
+            y_mask = y_mask.to(self.device).flatten().to(torch.int)
+            y_nonpadded_sum = y_mask.sum()
             # take to device
             x, y = x.to(self.device), y.to(self.device)
             # feed in the model
@@ -112,10 +113,10 @@ class Trainer:
                 with torch.cuda.amp.autocast():
                     pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate)
                     # compute loss
-                    loss = self.criterion(
+                    loss = (self.criterion(
                         pred_logits.view(-1, self.vocab_size),                      # (batch_size * dec_max_len, vocab_size)
                         y.view(-1)                                                  # (batch_size * dec_max_len)
-                    ).masked_fill(y_mask, 0).mean() / self.accu_grad
+                    ) * y_mask).sum() / (y_nonpadded_sum * self.accu_grad)
                     self.scaler.scale(loss).backward()
                     # perplexity
                     ppl = torch.exp(loss)
@@ -123,8 +124,7 @@ class Trainer:
                 pred_logits, att_wgts = self.model(x, lx, y, self.tf_rate)
                 # compute loss
                 loss = (self.criterion(pred_logits.view(-1, self.vocab_size), y.flatten())
-                            .masked_fill(y_mask, 0)
-                            .mean() / self.accu_grad)
+                        * y_mask).sum() / (y_nonpadded_sum * self.accu_grad)
                 loss.backward()
                 # perplexity
                 ppl = torch.exp(loss)
@@ -185,13 +185,16 @@ class Trainer:
                          position=0, desc=f'evaluating epoch[{self.epoch}]...')
         with torch.inference_mode():
             for i, (x, y, lx, ly) in enumerate(self.dev_loader):
+                # remove <sos> in the beginning of ys
+                y, ly = y[:, 1:], ly - 1
                 # dims
                 batch_size, dec_max_len = y.size()
                 # masks
                 y_mask = (torch.arange(0, dec_max_len, dtype=torch.int64)
                                .unsqueeze(0).expand(batch_size, dec_max_len))       # (batch_size, dec_max_len)
-                y_mask = y_mask >= y_mask.new(ly).unsqueeze(-1)                     # (batch_size, dec_max_len)
-                y_mask = y_mask.to(self.device).flatten()
+                y_mask = y_mask < y_mask.new(ly).unsqueeze(-1)                     # (batch_size, dec_max_len)
+                y_mask = y_mask.to(self.device).flatten().to(torch.int)
+                y_nonpadded_sum = y_mask.sum()
                 # take to device
                 x, y = x.to(self.device), y.to(self.device)
                 if self.scaler:
@@ -200,12 +203,12 @@ class Trainer:
                         # compute loss
                         # truncating only the part matching ground truth
                         loss = (self.criterion(pred_logits[:, :dec_max_len, :].reshape(-1, self.vocab_size), y.flatten())
-                                    .masked_fill(y_mask, 0).mean())
+                                    * y_mask).sum() / y_nonpadded_sum
                 else:
                     pred_logits, _ = self.model(x, lx, dec_y=None)
                     # compute loss
                     loss = (self.criterion(pred_logits[:, :dec_max_len, :].reshape(-1, self.vocab_size), y.flatten())
-                                .masked_fill(y_mask, 0).mean())
+                                * y_mask).sum() / y_nonpadded_sum
                 # perplexity
                 ppl = torch.exp(loss)
                 # total
@@ -213,15 +216,15 @@ class Trainer:
                 total_ppl += ppl.item()
 
                 # greedy search
-                pred_chars = self.greedy_search_stepwise(pred_logits)
+                pred_chars = pred_logits.argmax(dim=-1)
                 # compute levenshtein distance
-                total_ld += self.batch_levenshtein(pred_chars, y)
+                total_ld += self.batch_levenshtein(pred_chars, y, ly)
 
                 # update batch_bar
                 batch_bar.set_postfix(
-                    avg_loss=f"{total_loss/(i + 1):.6f}",
-                    avg_ppl=f"{total_ppl/(i + 1):.6f}",
-                    avg_ld=f"{total_loss/(i + 1):.6f}",
+                    avg_loss=f"{total_loss / (i + 1):.6f}",
+                    avg_ppl=f"{total_ppl / (i + 1):.6f}",
+                    avg_ld=f"{total_ld / (i + 1):.6f}",
                 )
                 batch_bar.update()
             # finish
@@ -229,7 +232,7 @@ class Trainer:
             del x, y, lx, ly
             torch.cuda.empty_cache()
 
-        return total_loss / (i + 1), total_ppl / (i + 1), total_ld / (i + 1)
+        return (total_loss / len(self.dev_loader), total_ppl / len(self.dev_loader), total_ld / len(self.dev_loader))
 
 
     def train_eval(self, epochs: int):
@@ -242,6 +245,10 @@ class Trainer:
                 self.dropout_step()
             # training
             trn_loss, trn_ppl, att_wgts = self.train_epoch()
+            # visualize att_wgts map
+            pay_attention_multihead(
+                att_wgts=att_wgts, epoch=self.epoch, root_dir=f"{self.saving_dir}/imgs"
+            )
             # add to records
             self.train['loss'].append(trn_loss)
             self.train['ppl'].append(trn_ppl)
@@ -263,10 +270,6 @@ class Trainer:
                 self.epoch_scheduler.step()
                 if self.trncfgs.wandb.use:
                     wandb.log({'learning-rate': self.optimizer.param_groups[0]['lr']})
-            # visualize att_wgts map
-            pay_attention_multihead(
-                att_wgts=att_wgts, epoch=self.epoch, root_dir=f"{self.saving_dir}/imgs"
-            )
 
 
     def reset_stats(self):
@@ -332,55 +335,58 @@ class Trainer:
         if isinstance(layer, nn.LSTM) or isinstance(layer, nn.LSTMCell):
             for p in layer.parameters():
                 nn.init.uniform_(p.data, -0.1, 0.1)
-        elif isinstance(layer, nn.Linear):
-            nn.init.xavier_uniform_(layer.weight)
+        # elif isinstance(layer, nn.Linear):
+        #     nn.init.xavier_uniform_(layer.weight)
+        #     nn.init.zeros_(layer.bias)
+        """
+            uncomment the Linear initialization part if you want to fail
+        """
     
 
-    @staticmethod
-    def greedy_search_stepwise(logits_tensor):
-        """
-            greedy search for logits tensor per time step
-            Args:
-                logits_tensor: (batch_size, seq_len, vocab_size)
-        """
-        return logits_tensor.argmax(dim=-1)
-    
-
-    def batch_levenshtein(self, pred_chars, gold_chars, return_avg: bool=False):
+    def batch_levenshtein(self, pred_chars, gold_chars, gold_lens):
         """
             compute avg. Levenshtein distance batch-wise
             Args:
                 pred_chars: (batch_size, max_seq_len)
                 gold_chars: (batch_size, max_seq_len)
-                return_avg: (bool) whether to divide by batch size
+                gold_lens: (batch_size, )
         """
         ld_total = 0
         for b in range(pred_chars.size(0)):
             pred_str = self.idx_to_str(pred_chars[b])
-            gold_str = self.idx_to_str(gold_chars[b])
+            gold_str = self.idx_to_str(gold_chars[b][:gold_lens[b]])
             ld_total += Levenshtein.distance(pred_str, gold_str)
-        return ld_total / b if return_avg else ld_total
+        return ld_total / pred_chars.size(0)
+    
+
+    def batch_levenshtein_toy(self, pred_chars, gold_chars, gold_lens):
+        ld_total = 0
+        for b in range(pred_chars.size(0)):
+            pred_str = self.idx_to_str(pred_chars[b], True)
+            gold_str = self.idx_to_str(gold_chars[b][:gold_lens[b]], True)
+            ld_total += Levenshtein.distance(pred_str, gold_str)
+        return ld_total / pred_chars.size(0)
 
 
-    def idx_to_str(self, idx_seq):
+    def idx_to_str(self, idx_seq, return_list: bool=False):
         """
             Args:
                 idx_seq: (max_seq_len, )
         """
-        out_str = ''
+        out_list = list()
         for idx in idx_seq:
             if idx == self.SOS_IDX:
                 continue
             elif idx == self.EOS_IDX:
                 break
             else:
-                out_str += self.vocab[idx]
-        return out_str
+                out_list.append(self.vocab[idx])
+        return out_list if return_list else ''.join(out_list)
     
 
     def tf_rate_step(self):
-        if self.epoch > self.tf_configs['high_epochs']:
-            self.tf_rate = np.random.uniform(low=self.tf_configs['min_val'])
+        if self.epoch > 0 and self.dev['ld'][-1] <= 20:
+            self.tf_rate -= self.trncfgs.tf_rate_scheduler.configs['factor']
     
 
     def dropout_step(self):
@@ -395,6 +401,7 @@ class Trainer:
         self.model.listen.final_dropout *= ratio
         # speller
         self.model.spell.att_dropout *= ratio
+        self.model.spell.attention.dropout *= ratio
         self.model.spell.dec_emb_dropout *= ratio
         self.model.spell.dec_lstm_dropout *= ratio
 
@@ -410,7 +417,32 @@ def main(args):
     print(f"\n\nRunning on [{device}]...\n")
 
     # load configs
-    trncfgs = cfgClass(yaml.safe_load(open(args.config_file)))
+    trncfgs_dict = yaml.safe_load(open(args.config_file))
+    # toy dataset loading
+    useMini = False
+
+    # original vocabs
+    from src.constants import VOCAB, VOCAB_MAP
+    print(VOCAB, VOCAB_MAP)
+
+    if trncfgs_dict['TRN_FOLDER'].startswith('mini'):
+        useMini = True
+        # LABELS
+        dev_labels = np.load(f"{trncfgs_dict['TRN_FOLDER']}/dev_labels.npy")
+        VOCAB_MAP           = dict(zip(np.unique(dev_labels), range(len(np.unique(dev_labels))))) 
+        VOCAB_MAP["[PAD]"]  = len(VOCAB_MAP)
+        VOCAB               = list(VOCAB_MAP.keys())
+    # add configs derived from constants
+    trncfgs_dict['model']['configs']['speller_configs']['dec_vocab_size'] = len(VOCAB)
+    trncfgs_dict['model']['configs']['speller_configs']['CHR_SOS_IDX'] = VOCAB_MAP['[SOS]'] if useMini else VOCAB_MAP['<sos>']
+    trncfgs_dict['model']['configs']['speller_configs']['CHR_PAD_IDX'] = VOCAB_MAP['[EOS]'] if useMini else VOCAB_MAP['<eos>']
+    # add vocabs to dict for inference use
+    trncfgs_dict['VOCAB'] = VOCAB
+    trncfgs_dict['VOCAB_MAP'] = VOCAB_MAP
+    trncfgs_dict['EOS_IDX'] = trncfgs_dict['model']['configs']['speller_configs']['CHR_PAD_IDX']
+    trncfgs_dict['SOS_IDX'] = trncfgs_dict['model']['configs']['speller_configs']['CHR_SOS_IDX']
+    # transformation
+    trncfgs = cfgClass(trncfgs_dict)
 
     # seed
     torch.manual_seed(trncfgs.seed)
@@ -424,40 +456,75 @@ def main(args):
     tgt_folder = f"{trncfgs.EXP_FOLDER}/{tgt_folder}"
     os.makedirs(tgt_folder, exist_ok=True)
     # save the configuration copy into the folder
-    shutil.copy(args.config_file, f"{tgt_folder}/config.yml")
+    json.dump(trncfgs_dict, open(f"{tgt_folder}/config.json", 'w'), indent=4)
     # subdirectories
     for subdir in ('imgs', 'ckpts'):
         os.makedirs(f"{tgt_folder}/{subdir}", exist_ok=True)
 
-    # data loading
-    trnDataset = datasetTrainDev(
-        stdDir=trncfgs.TRN_FOLDER, 
-        keepTags=True, 
-        labelToIdx=VOCAB_MAP
-    )
-    devDataset = datasetTrainDev(
-        stdDir=trncfgs.DEV_FOLDER, 
-        keepTags=True, 
-        labelToIdx=VOCAB_MAP
-    )
-    trnLoader = DataLoader(
-        trnDataset,
-        batch_size=trncfgs.batch_size,
-        num_workers=trncfgs.num_workers,
-        collate_fn=collate_train_dev,
-        shuffle=True,
-        pin_memory=True
-    )
-    devLoader = DataLoader(
-        devDataset,
-        batch_size=trncfgs.batch_size,
-        num_workers=trncfgs.num_workers,
-        collate_fn=collate_train_dev
-    )
+    if trncfgs.TRN_FOLDER.startswith('mini'):
+        # data loading
+        trnDataset = datasetTrainDevToy(
+            root_dir=trncfgs.TRN_FOLDER, 
+            subset='train',
+            keep_tags=True, 
+            label_to_idx=VOCAB_MAP,
+            EOS_IDX=VOCAB_MAP['[EOS]'],
+            use_specaug=trncfgs.use_specaug
+        )
+        devDataset = datasetTrainDevToy(
+            root_dir=trncfgs.TRN_FOLDER, 
+            subset='dev',
+            keep_tags=True, 
+            label_to_idx=VOCAB_MAP,
+            EOS_IDX=VOCAB_MAP['[EOS]'],
+            use_specaug=False
+        )
+        trnLoader = DataLoader(
+            trnDataset,
+            batch_size=trncfgs.batch_size,
+            num_workers=trncfgs.num_workers,
+            collate_fn=trnDataset.collate_fn,
+            shuffle=True,
+            pin_memory=True
+        )
+        devLoader = DataLoader(
+            devDataset,
+            batch_size=trncfgs.batch_size,
+            num_workers=trncfgs.num_workers,
+            collate_fn=devDataset.collate_fn,
+        )
+    else:
+        # data loading
+        trnDataset = datasetTrainDev(
+            stdDir=trncfgs.TRN_FOLDER, 
+            keepTags=True, 
+            labelToIdx=VOCAB_MAP,
+            useSpecAug=trncfgs.use_specaug
+        )
+        devDataset = datasetTrainDev(
+            stdDir=trncfgs.DEV_FOLDER, 
+            keepTags=True, 
+            labelToIdx=VOCAB_MAP,
+            useSpecAug=False
+        )
+        trnLoader = DataLoader(
+            trnDataset,
+            batch_size=trncfgs.batch_size,
+            num_workers=trncfgs.num_workers,
+            collate_fn=trnDataset.collate_fn,
+            shuffle=True,
+            pin_memory=True
+        )
+        devLoader = DataLoader(
+            devDataset,
+            batch_size=trncfgs.batch_size,
+            num_workers=trncfgs.num_workers,
+            collate_fn=devDataset.collate_fn,
+        )
+    
     print(f"\nA total of [{len(trnLoader)}] batches in training set, and [{len(devLoader)}] in dev set.\n")
 
     # model building
-    trncfgs.model.configs['speller_configs']['dec_vocab_size'] = len(VOCAB)
     model = ListenAttendSpell(**trncfgs.model.configs)
     model.to(device)
     
@@ -483,7 +550,8 @@ def main(args):
         trncfgs=trncfgs, criterion=criterion, scaler=scaler, 
         tf_rate=trncfgs.tf_rate, saving_dir=tgt_folder, device=device, 
         accu_grad=trncfgs.accu_grad, grad_norm=trncfgs.grad_norm, 
-        SOS_IDX=VOCAB_MAP['<sos>'], EOS_IDX=VOCAB_MAP['<eos>']
+        SOS_IDX=VOCAB_MAP['[SOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<sos>'], 
+        EOS_IDX=VOCAB_MAP['[EOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<eos>']
     )
 
     # train 

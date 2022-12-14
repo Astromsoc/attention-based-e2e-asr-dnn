@@ -1,20 +1,22 @@
 # filepaths
 # ------------------------------------------------
-TRN_FOLDER: mini/train-clean-100
-DEV_FOLDER: mini/dev-clean
+TRN_FOLDER: mini
+# TRN_FOLDER: data/train-clean-100
+# DEV_FOLDER: data/dev-clean
 TST_FOLDER: data/test-clean
 EXP_FOLDER: experiments
 
 # training
 # ------------------------------------------------
 seed: 11785
-epochs: 30
-batch_size: 48
-num_workers: 12
-accu_grad: 8
-grad_norm: 100.0
+epochs: 10
+batch_size: 96
+num_workers: 4
+accu_grad: 6
+grad_norm: 10.0
 tf_rate: 1.0
 max_savings: 3
+use_specaug: true
 
 # wandb
 # ------------------------------------------------
@@ -32,24 +34,25 @@ model:
   configs:
     listener_configs:
       input_dim: 15
-      uniform_hidden_dim: 64 # 256
+      uniform_hid_dim: 256
       lstm_layers: 1
       plstm_layers: 3
       bidirectional: true
-      init_dropout: 0.1
-      mid_dropout: 0.1
-      final_dropout: 0.1
+      init_dropout: 0.2
+      mid_dropout: 0.2
+      final_dropout: 0.2
     speller_configs:
       # encoder + attention
-      att_proj_dim: 128 # 512
+      att_proj_dim: 128
       att_heads: 1
-      att_dropout: 0.1
+      att_dropout: 0.2
       # decoder embeddings
-      dec_emb_dim: 256 # 1024
-      dec_emb_dropout: 0.1
+      dec_emb_dim: 256
+      dec_emb_dropout: 0.2
       # decoder lstm cells
-      dec_lstm_hidden_dim: 128 # 512
-      dec_lstm_dropout: 0.1
+      dec_lstm_hid_dim: 512
+      dec_lstm_out_dim: 128
+      dec_lstm_dropout: 0.2
       # trivials
       CHR_MAX_STEPS: 600
       USE_GREEDY: true
@@ -80,9 +83,7 @@ epoch_scheduler:
 tf_rate_scheduler:
   use: true
   configs:
-    high_epochs: 25
-    high_val: 1.0
-    min_val: 0.5
+    factor: 0.015
 
 # dropout scheduler
 dropout_scheduler:

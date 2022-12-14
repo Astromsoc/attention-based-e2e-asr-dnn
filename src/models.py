@@ -19,7 +19,7 @@ class Listener(nn.Module):
     def __init__(
         self, 
         input_dim: int=15,
-        uniform_hidden_dim: int=256,
+        uniform_hid_dim: int=256,
         lstm_layers: int=1,
         plstm_layers: int=3,
         bidirectional: bool=True,
@@ -29,7 +29,7 @@ class Listener(nn.Module):
     ):
         super().__init__()
         self.input_dim = input_dim
-        self.uniform_hidden_dim = uniform_hidden_dim
+        self.uniform_hid_dim = uniform_hid_dim
         self.lstm_layers = lstm_layers
         self.plstm_layers = plstm_layers
         self.bidirectional = bidirectional
@@ -40,15 +40,15 @@ class Listener(nn.Module):
         # initial BiLSTM layer(s)
         self.base = LockedLSTM(
             lstm_input_dim=self.input_dim,
-            uniform_hidden_dim=self.uniform_hidden_dim,
+            uniform_hid_dim=self.uniform_hid_dim,
             lstm_layers=self.lstm_layers,
             bidirectional=self.bidirectional,
             init_dropout=self.init_dropout,
             mid_dropout=self.mid_dropout
         )
         self.pyramid = pyramLockedLSTM(
-            plstm_input_dim=(int(self.bidirectional) + 1) * self.uniform_hidden_dim,
-            uniform_hidden_dim=self.uniform_hidden_dim,
+            plstm_input_dim=(int(self.bidirectional) + 1) * self.uniform_hid_dim,
+            uniform_hid_dim=self.uniform_hid_dim,
             plstm_layers=self.plstm_layers,
             bidirectional=self.bidirectional,
             mid_dropout=self.mid_dropout,
@@ -76,26 +76,26 @@ class MultiheadCrossAttention(nn.Module):
     """
     def __init__(
         self, 
-        encoder_output_dim: int=512,
-        decoder_hidden_dim: int=512,
-        projection_dim: int=512,
+        enc_out_dim: int=512,
+        dec_out_dim: int=128,
+        proj_dim: int=128,
         heads: int=4,
         dropout: float=0.1
     ):
         super().__init__()
-        assert projection_dim % heads == 0
-        self.encoder_output_dim = encoder_output_dim
-        self.decoder_hidden_dim = decoder_hidden_dim
-        self.projection_dim = projection_dim
+        assert proj_dim % heads == 0
+        self.enc_out_dim = enc_out_dim
+        self.dec_out_dim = dec_out_dim
+        self.proj_dim = proj_dim
         self.heads = heads
-        self.dims_per_head = self.projection_dim // self.heads
+        self.dims_per_head = self.proj_dim // self.heads
         self.norm_factor = 1 / math.sqrt(self.dims_per_head)                       # 1 / sqrt(proj_dim // head) for normalization
         # build up mapping matrices
-        self.key_map = nn.Linear(self.encoder_output_dim, self.projection_dim)
-        self.value_map = nn.Linear(self.encoder_output_dim, self.projection_dim)
-        self.query_map = nn.Linear(self.decoder_hidden_dim, self.projection_dim)
+        self.key_map = nn.Linear(self.enc_out_dim, self.proj_dim)
+        self.value_map = nn.Linear(self.enc_out_dim, self.proj_dim)
+        self.query_map = nn.Linear(self.dec_out_dim, self.proj_dim)
         # [optional] additional linear transformation layer
-        self.final_map = nn.Linear(self.projection_dim, self.projection_dim)
+        self.final_map = nn.Linear(self.proj_dim, self.proj_dim)
         # softmax layer for attended value normalization
         self.softmax = nn.Softmax(dim=-1)
         # dropout rate
@@ -103,20 +103,15 @@ class MultiheadCrossAttention(nn.Module):
 
 
     @staticmethod
-    def build_pad_masks(enc_l, device: str, max_len: int=0):
+    def build_pad_masks(enc_l):
         """
             build up masks to ignore padded sections
             Args:
                 enc_l: (batch_size, ) encoder output lengths
         """
-        batch_size = enc_l.size(0)
-        max_len = max_len if max_len else enc_l.max()
-        # build up range vector
-        mask = (torch.arange(0, max_len, dtype=torch.int64)                         # (max_len, )
-                     .unsqueeze(0)                                                  # (1, max_len)
-                     .expand(batch_size, max_len))                                  # (batch_size, max_len)
-        lengths_as_int = mask.new(enc_l).unsqueeze(-1)                              # (batch_size, 1)
-        return mask >= lengths_as_int                                               # (batch_size, max_len)
+        max_len = enc_l.max()
+        return (torch.arange(0, max_len, dtype=torch.int64).unsqueeze(0) 
+                >= enc_l.unsqueeze(1))                                        # (batch_size, enc_max_len)
 
 
     def locked_dropout(self, x):
@@ -141,46 +136,41 @@ class MultiheadCrossAttention(nn.Module):
                 enc_l: (batch_size, ) encoder output lengths 
                 # Note: enc_l may be long int: remember to get back to int
         """
-        # 
         # [0] dims
         batch_size, enc_max_len, _ = enc_h.size()
-        # [1] masks for padded sections
-        mask = self.build_pad_masks(enc_l, device=enc_h.device)                     # (batch_size, max_len)
-
-        # [2] keys and values 
+        # [1] keys and values 
         self.keys = (self.key_map(enc_h)                                            # (batch_size, seq_len, proj_dim)
                          .view(batch_size, -1, self.heads, self.dims_per_head)      # (batch_size, seq_len, num_heads, proj_dims_per_head)
-                         .transpose(1, 2)
+                         .transpose(1, 2)                                           # (batch_size, num_heads, seq_len, proj_dims_per_head)
                          .transpose(-2, -1))                                        # (batch_size, num_heads, proj_dims_per_head, seq_len)
         self.values = (self.value_map(enc_h)                                        # (batch_size, seq_len, num_heads, proj_dim)
                            .view(batch_size, -1, self.heads, self.dims_per_head)    # (batch_size, seq_len, num_heads, proj_dims_per_head)
                            .transpose(1, 2))                                        # (batch_size, num_heads, seq_len, proj_dims_per_head)
-
-        # [3] extend the mask
+        # [2] masks
+        mask = self.build_pad_masks(enc_l)                                          # (batch_size, max_len)
         self.masks = (mask[:, None, None, :]
-                      .expand((batch_size, self.heads, 1, enc_max_len))            # (batch_size, num_heads, 1, seq_len)
-                      .to(enc_h.device))                           
-    
+                      .expand((batch_size, self.heads, 1, enc_max_len))             # (batch_size, num_heads, 1, seq_len)
+                      .to(enc_h.device))
+
 
     def forward(self, dec_h, return_wgts: bool=False):
         """
             official forward for the decoder
             Args:
-                dec_h: (batch_size, decoder_lstm_hidden_dim)
+                dec_h: (batch_size, dec_lstm_out_dim)
         """
-        # [0] batch size
-        batch_size = dec_h.size(0)
+        # [0] dims
+        batch_size = dec_h.size(0)                                                  # (batch_size, 1, dec_lstm_out_dim)
         # [1] query
         self.queries = (self.query_map(dec_h)                                       # (batch_size, proj_dim)
                             .view(batch_size, self.heads, self.dims_per_head)       # (batch_size, num_heads, proj_dims_per_head)
-                            .unsqueeze(-2))                                         # (batch_size, num_heads, 1, proj_dims_per_head)
+                            .unsqueeze(2))                                          # (batch_size, num_heads, 1, proj_dims_per_head)
         # [2] attention weights
-        wgts_prenorm = torch.matmul(self.queries, self.keys)                        # (batch_size, num_heads, 1, seq_len)
-        #     turn padded sections into negative infinity
+        wgts_prenorm = torch.matmul(self.queries, self.keys) / self.norm_factor     # (batch_size, num_heads, 1, seq_len)
         min_val = torch.finfo(wgts_prenorm.dtype).min
         wgts_prenorm = wgts_prenorm.masked_fill(self.masks, min_val)                # (batch_size, num_heads, 1, seq_len)
         #     apply softmax & zero out trivial vals
-        wgts_normed = (self.softmax(wgts_prenorm /  self.norm_factor)
+        wgts_normed = (self.softmax(wgts_prenorm)
                            .masked_fill(self.masks, 0.0))                           # (batch_size, num_heads, 1, seq_len)
         # [3] attended values
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
@@ -202,7 +192,7 @@ class Speller(nn.Module):
         self,
         # attention (encoder -> attention)
         enc_out_dim: int=512,
-        att_proj_dim: int=512,
+        att_proj_dim: int=128,
         att_heads: int=4,
         att_dropout: float=0.2,
         # decoder embeddings
@@ -210,7 +200,8 @@ class Speller(nn.Module):
         dec_emb_dim: int=256,
         dec_emb_dropout: float=0.5,
         # decoder lstm cells
-        dec_lstm_hidden_dim: int=512,
+        dec_lstm_hid_dim: int=512,
+        dec_lstm_out_dim: int=128,
         dec_lstm_dropout: float=0.2,
         # trivials
         CHR_MAX_STEPS: int=600,
@@ -223,7 +214,8 @@ class Speller(nn.Module):
                 vocab_size: size of characters
                 dec_emb_dim: embedding dimensions
                 dec_pad_idx: padding indices for the characters
-                dec_hidden_dim: hidden dimension within uniLSTMs
+                dec_hid_dim: hidden dimension within uniLSTMs
+                dec_out_dim: hidden dimension within uniLSTMs
                 dec_emb_dropout: embedding dropout
                 dec_mid_dropout: dropout rate for the mid later
         """
@@ -238,7 +230,8 @@ class Speller(nn.Module):
         self.dec_emb_dim = dec_emb_dim
         self.dec_emb_dropout = dec_emb_dropout
         # lstm: 2 cells by default
-        self.dec_lstm_hidden_dim = dec_lstm_hidden_dim
+        self.dec_lstm_hid_dim = dec_lstm_hid_dim
+        self.dec_lstm_out_dim = dec_lstm_out_dim
         self.dec_lstm_dropout = dec_lstm_dropout
         # trivials
         self.CHR_MAX_STEPS = CHR_MAX_STEPS
@@ -248,9 +241,9 @@ class Speller(nn.Module):
 
         # attention module
         self.attention = MultiheadCrossAttention(
-            encoder_output_dim=self.enc_out_dim,
-            decoder_hidden_dim=self.dec_lstm_hidden_dim,
-            projection_dim=self.att_proj_dim,
+            enc_out_dim=self.enc_out_dim,
+            dec_out_dim=self.dec_lstm_out_dim,
+            proj_dim=self.att_proj_dim,
             heads=self.att_heads,
             dropout=self.att_dropout
         )
@@ -264,31 +257,34 @@ class Speller(nn.Module):
         self.lstms = AutoRegDecoderLSTMCell(
             att_proj_dim=self.att_proj_dim,
             dec_emb_dim=self.dec_emb_dim,
-            dec_hidden_dim=self.dec_lstm_hidden_dim,
+            dec_hid_dim=self.dec_lstm_hid_dim,
+            dec_out_dim=self.dec_lstm_out_dim,
             dec_mid_dropout=self.dec_lstm_dropout
         )
-        self.init_query = nn.Parameter(torch.zeros((1, self.dec_lstm_hidden_dim)), requires_grad=True)
-        self.init_hidden = [(
-            nn.Parameter(torch.zeros((1, self.dec_lstm_hidden_dim)), requires_grad=True),
-            nn.Parameter(torch.zeros((1, self.dec_lstm_hidden_dim)), requires_grad=True)
-        ) for _ in range(2)]
+        self.init_query = nn.Parameter(torch.rand((1, self.dec_lstm_out_dim)), requires_grad=True)
+        self.init_hiddens = [(
+            nn.Parameter(torch.zeros((1, self.dec_lstm_hid_dim)), requires_grad=True),
+            nn.Parameter(torch.zeros((1, self.dec_lstm_hid_dim)), requires_grad=True)
+        ), (
+            nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True),
+            nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True)
+        )]
         # classification layers
-        self.gap = nn.Linear(self.dec_lstm_hidden_dim + self.att_proj_dim, self.dec_emb_dim)
+        self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
         self.act = nn.GELU()
         self.cls = nn.Linear(self.dec_emb_dim, self.dec_vocab_size)
         # weight tying
         self.cls.weight = self.char_emb.weight
     
         
-    def locked_dropout_1d(self, x, p):
+    def locked_dropout_withmask(self, x, p):
         """
             keep the same dropout for the entire batch
         """
         if (not self.training) or (not p):
-            return x
-        mask = x.new_empty(1, x.size(1)).bernoulli_(1 - p)
-        mask = mask.div_(1 - p).expand_as(x)
-        return x * mask
+            return x, None
+        mask = x.new_empty(1, x.size(1)).bernoulli_(1 - p).div_(1 - p).expand_as(x)
+        return x * mask, mask
         
 
     def forward(self, enc_h, enc_l, dec_y=None, teacher_forcing_rate: float=1):
@@ -303,14 +299,13 @@ class Speller(nn.Module):
 
         # teacher forcing during training
         if self.training:
-            dec_max_len = dec_y.size(-1)
-            steps = dec_max_len
+            steps = dec_y.size(-1)
             gold_label_emb = self.char_emb(dec_y)                                   # (batch_size, dec_seq_len, dec_emb_dim)
         else:
             steps = self.CHR_MAX_STEPS
         
         # all prediction logits saved in one list
-        pred_logits = None
+        pred_logits = list()
 
         """
             initiate attention for the encoded inputs
@@ -325,15 +320,17 @@ class Speller(nn.Module):
         char = torch.full((batch_size, ), fill_value=self.CHR_SOS_IDX, 
                            dtype=torch.long, device=enc_h.device)                   # (batch_size, )
         # initial hidden states
-        hiddens = [[u.expand(batch_size, self.dec_lstm_hidden_dim).to(enc_h.device) for u in layer]
-                   for layer in self.init_hidden]
+        hiddens = [None, None]
+        hiddens[0] = [u.expand(batch_size, self.dec_lstm_hid_dim).to(enc_h.device) 
+                      for u in self.init_hiddens[0]]
+        hiddens[1] = [u.expand(batch_size, self.dec_lstm_out_dim).to(enc_h.device) 
+                      for u in self.init_hiddens[1]]
         # initial query & context
-        init_query = self.init_query.expand(batch_size, self.dec_lstm_hidden_dim).to(enc_h.device)
+        init_query = self.init_query.expand(batch_size, self.dec_lstm_out_dim).to(enc_h.device)
         context, att_wgts = self.attention(init_query, return_wgts=True)
         
         # bookkeeping
-        att_wgts_list = [att_wgts[-1].detach().cpu().numpy().copy()]                # (num_heads, 1, enc_seq_len)
-        
+        att_wgts_list = [att_wgts[0].detach().cpu()]                                # (num_heads, 1, enc_seq_len)
         # loop
         for t in range(steps):
             # get character embeddings from prev step
@@ -342,11 +339,13 @@ class Speller(nn.Module):
             if self.training and t > 0:
                 if torch.rand(1).item() <= teacher_forcing_rate:
                     char_emb = gold_label_emb[:, t - 1, :]                          # (batch_size, dec_emb_dim)
-            
-            # embedding dropout
-            char_emb = self.locked_dropout_1d(char_emb, self.dec_emb_dropout)
-            # context dropout
-            context = self.locked_dropout_1d(context, self.att_dropout)
+                char_emb = char_emb_mask * char_emb
+                context = context_mask * context
+            if self.training and t == 0:
+                # embedding dropout
+                char_emb, char_emb_mask = self.locked_dropout_withmask(char_emb, self.dec_emb_dropout)
+                # context dropout
+                context, context_mask = self.locked_dropout_withmask(context, self.att_dropout)
 
             # input for decoder: char emb + context, prev step
             hiddens = self.lstms(char_emb, context, hiddens)
@@ -355,26 +354,27 @@ class Speller(nn.Module):
             # (batch_size, proj_dim), (batch_size, num_heads, 1, enc_seq_len)
         
             # concatenate last layer hidden states w/ context for char network to make a decision
-            dec_out = torch.cat((hiddens[-1][0], context), dim=-1)                  # (batch_size, dec_hidden_dim + att_proj_dim)
-            char_logits = self.cls(self.act(self.gap(dec_out)))                     
-            # (batch_size, dec_hidden_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
+            projected_queries = self.attention.queries.view(batch_size, -1)
+            dec_out = torch.cat((projected_queries, context), dim=-1)               # (batch_size, dec_out_dim + att_proj_dim)
+            # char_logits = self.cls(self.act(self.gap(dec_out)))                     
+            # (batch_size, dec_out_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
+            char_logits = self.cls(dec_out)
 
             # add logits
-            pred_logits = (torch.cat([pred_logits, char_logits.unsqueeze(1)], dim=1) if pred_logits is not None 
-                           else char_logits.unsqueeze(1).clone())                   # (batch_size, dec_max_len, vocab_size)
-            att_wgts_list.append(att_wgts[-1].detach().cpu().numpy().copy())        # (num_heads, 1, enc_seq_len)
-            
+            pred_logits.append(char_logits)                                         # (batch_size, dec_max_len, vocab_size)
+            att_wgts_list.append(att_wgts[0].detach().cpu())                        # (num_heads, 1, enc_seq_len)
+
             # obtain the char to input for next timestep
             if self.USE_GREEDY:
-                char = char_logits.argmax(-1)                                       # (batch_size, vocab_size)
+                char = char_logits.argmax(-1)                                       # (batch_size, )
             else:
                 # left for beam search (w/ LM rescoring)
                 pass
         
+        # concatenate all the predicted char logits across time
+        pred_logits = torch.stack(pred_logits, dim=1)                               # (batch_size, dec_max_len, vocab_size)
         # concatenate all the attention maps
-        att_wgts_list = np.concatenate(att_wgts_list, axis=-2).transpose(0, 2, 1)   # (num_heads, dec_seq_len, enc_seq_len)
-        
-
+        att_wgts_list = torch.cat(att_wgts_list, dim=1).transpose(-2, -1)           # (num_heads, dec_max_len, enc_seq_len)
         return pred_logits, att_wgts_list
 
 
@@ -391,7 +391,7 @@ class ListenAttendSpell(nn.Module):
         super().__init__()
         self.listener_configs = listener_configs
         self.speller_configs = speller_configs
-        self.speller_configs['enc_out_dim'] = 2 * self.listener_configs['uniform_hidden_dim']
+        self.speller_configs['enc_out_dim'] = 2 * self.listener_configs['uniform_hid_dim']
         # modules
         self.listen = Listener(**self.listener_configs)
         self.spell = Speller(**self.speller_configs)
@@ -432,15 +432,15 @@ if __name__ == '__main__':
     ENC_PLSTM_LAYERS = 3
     ENC_BIDIRECTIONAL = True
 
-    ENC_HIDDEN_DIM = 256
+    ENC_HID_DIM = 256
     ENC_INIT_DROPOUT = 0.2
     ENC_MID_DROPOUT = 0.3
-    ENC_FINAL_DROPOUT = 0.4
+    ENC_FINAL_DROPOUT = 0.3
 
     """
         attention
     """
-    ATT_PROJ_DIM = 512
+    ATT_PROJ_DIM = 128
     ATT_HEADS = 4
     ATT_DROPOUT = 0.2
 
@@ -448,9 +448,10 @@ if __name__ == '__main__':
     """
         decoder
     """
-    DEC_EMB_DIM = 512
+    DEC_EMB_DIM = 256
     DEC_EMB_DROPOUT = 0.2
-    DEC_LSTM_HIDDEN_DIM = 512
+    DEC_LSTM_HID_DIM = 512
+    DEC_LSTM_OUT_DIM = 128
     DEC_LSTM_DROPOUT = 0.2
     VOCAB = [
         '<sos>', 'A', 'B', 'C', 'D', 'E', 
@@ -469,13 +470,13 @@ if __name__ == '__main__':
     }
     CHR_PAD_IDX = CHAR2IDX['<eos>']          # 29
     CHR_SOS_IDX = CHAR2IDX['<sos>']          # 0
-    CHR_MAX_STEPS = 110
+    CHR_MAX_STEPS = 20
     TEACHER_FORCING = 0.9
 
 
     testListener = Listener(
         input_dim=ENC_LSTM_INPUT_DIM,
-        uniform_hidden_dim=ENC_HIDDEN_DIM,
+        uniform_hid_dim=ENC_HID_DIM,
         lstm_layers=ENC_LSTM_LAYERS,
         plstm_layers=ENC_PLSTM_LAYERS,
         bidirectional=ENC_BIDIRECTIONAL,
@@ -499,15 +500,15 @@ if __name__ == '__main__':
         Standalone attention test (shape)
             # show masks
             testMHA = MultiheadCrossAttention(
-                encoder_output_dim=ENCODER_HIDDEN_DIM * 2,
-                decoder_hidden_dim=DECODER_HIDDEN_DIM,
-                projection_dim=ATT_PROJ_DIM,
+                enc_out_dim=ENCODER_HID_DIM * 2,
+                dec_hid_dim=dec_hid_dim,
+                proj_dim=ATT_PROJ_DIM,
                 heads=ATT_HEADS,
                 dropout=ATT_DROPOUT
             )
 
             testMHA.wrapup_encodings(XX, LXX)
-            Y = torch.zeros((BATCH_SIZE, DECODER_HIDDEN_DIM))
+            Y = torch.zeros((BATCH_SIZE, dec_hid_dim))
 
             att_vals, wgts = testMHA(Y, True)
             # expected shapes: torch.Size([4, 512]) torch.Size([4, 4, 1, 130])
@@ -523,7 +524,7 @@ if __name__ == '__main__':
     
     testSpeller = Speller(
         # attention (encoder -> attention)
-        enc_out_dim=ENC_HIDDEN_DIM * 2,
+        enc_out_dim=ENC_HID_DIM * 2,
         att_proj_dim=ATT_PROJ_DIM,
         att_heads=ATT_HEADS,
         att_dropout=ATT_DROPOUT,
@@ -532,7 +533,8 @@ if __name__ == '__main__':
         dec_emb_dim=DEC_EMB_DIM,
         dec_emb_dropout=DEC_EMB_DROPOUT,
         # decoder lstm cells
-        dec_lstm_hidden_dim=DEC_LSTM_HIDDEN_DIM,
+        dec_lstm_hid_dim=DEC_LSTM_HID_DIM,
+        dec_lstm_out_dim=DEC_LSTM_OUT_DIM,
         dec_lstm_dropout=DEC_LSTM_DROPOUT,
         # trivials
         CHR_MAX_STEPS=CHR_MAX_STEPS,

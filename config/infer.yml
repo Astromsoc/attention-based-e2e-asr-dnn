@@ -1,0 +1,20 @@
+# filepaths
+TST_FOLDER: data/test-clean
+
+# checkpoints
+exp_folder: experiments/221214-135709
+use_greedy: true
+
+# trivials
+batch_size: 96
+num_workers: 4
+
+# loading options
+run_all: false
+
+# IF NOT run all
+epoch_num: -1
+# make sure it exists under ckpts/ folder
+
+# whether to load averages
+run_avg: true

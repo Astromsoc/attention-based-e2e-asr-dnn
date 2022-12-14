@@ -15,5 +15,5 @@ VOCAB = ['<sos>',
 
 VOCAB_MAP = {VOCAB[i]: i for i in range(len(VOCAB))}
 
-SOS_TOKEN = VOCAB_MAP["<sos>"]
-EOS_TOKEN = VOCAB_MAP["<eos>"]
+SOS_IDX = VOCAB_MAP["<sos>"]
+EOS_IDX = VOCAB_MAP["<eos>"]

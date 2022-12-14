@@ -4,7 +4,7 @@ conda activate las
 
 # basic packages
 pip install python-levenshtein torchsummaryX torchaudio wandb
-pip install numpy matplotlib seaborn tqdm pyyaml
+pip install numpy matplotlib seaborn tqdm pyyaml kaggle
 
 # conda installed packages
 yes | conda install tmux
