@@ -61,8 +61,8 @@ class Trainer:
         self.EOS_IDX = EOS_IDX
         # take vocab_size out for convenience
         self.vocab_size = self.model.spell.dec_vocab_size
-        # initiate the model & take to device
-        self.model.apply(self.init_function).to(device)
+        # # initiate the model & take to device
+        # self.model.apply(self.init_function).to(device)
         
         # optimizer
         self.optimizer = {
@@ -77,7 +77,9 @@ class Trainer:
             self.optimizer, num_batches=len(self.trn_loader),
             **(self.trncfgs.batch_scheduler.configs)
         ) if self.trncfgs.batch_scheduler.use else None)
-        self.epoch_scheduler = None
+        self.epoch_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            self.optimizer, factor=0.5, patience=4, mode='min'
+        )
         # tf rate scheduler
         if self.trncfgs.tf_rate_scheduler.use:
             self.tf_configs = self.trncfgs.tf_rate_scheduler.configs
@@ -98,7 +100,7 @@ class Trainer:
         batch_bar = tqdm(total=len(self.trn_loader), dynamic_ncols=True, leave=False, 
                          position=0, desc=f'training epoch[{self.epoch}]...')
         # whether to apply init diag attention
-        init_force = self.init_force if self.epoch < 10 else False
+        init_force = self.init_force if self.epoch < 4 else False
         # loop
         for i, (x, y, lx, ly) in enumerate(self.trn_loader):
             # remove <sos> in the beginning of ys
@@ -239,7 +241,7 @@ class Trainer:
             torch.cuda.empty_cache()
 
         return (total_loss / len(self.dev_loader), total_ppl / len(self.dev_loader), 
-                total_ld / len(self.dev_loader) if total_ld else float('inf'))
+                total_ld / len(self.dev_loader) if total_ld else -1)
 
 
     def train_eval(self, epochs: int):
@@ -264,7 +266,10 @@ class Trainer:
             # add to records
             self.dev['loss'].append(dev_loss)
             self.dev['ppl'].append(dev_ppl)
-            self.dev['ld'].append(dev_ld)
+            if dev_ld <= 0:
+                self.dev['ld'].append(self.dev['ld'][-1])
+            else:
+                self.dev['ld'].append(dev_ld)
             # wandb logging
             if self.trncfgs.wandb.use:
                 wandb.log({'avg_trn_loss': trn_loss, 'avg_trn_ppl': trn_ppl,
@@ -276,7 +281,7 @@ class Trainer:
             self.epoch += 1
             # epoch-level lr scheduling
             if self.epoch_scheduler:
-                self.epoch_scheduler.step()
+                self.epoch_scheduler.step(dev_loss)
                 if self.trncfgs.wandb.use:
                     wandb.log({'learning-rate': self.optimizer.param_groups[0]['lr']})
 
@@ -313,7 +318,7 @@ class Trainer:
             # update results
             self.min_loss.update(epoch_record)
             tag += '-loss'
-        elif epoch_record['ld'] <= self.min_ld['ld']:
+        elif epoch_record['ld'] < self.min_ld['ld']:
             # update results
             self.min_ld.update(epoch_record)
             tag += '-ld'

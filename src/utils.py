@@ -121,9 +121,9 @@ class datasetTrainDev(Dataset):
         )
         
         # apply augmentation
-        if self.use_specaug:
-            x_batch_pad = self.time_masker(self.time_masker(self.time_masker(
-                        self.freq_masker(x_batch_pad)
+        if self.useSpecAug:
+            mfccs = self.time_masker(self.time_masker(self.time_masker(
+                        self.freq_masker(mfccs)
             )))
         
         return mfccs, transcripts, torch.tensor(mfcc_lens), torch.tensor(transcript_lens)

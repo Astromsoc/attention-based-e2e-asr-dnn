@@ -154,7 +154,7 @@ class MultiheadCrossAttention(nn.Module):
                       .to(enc_h.device))
 
 
-    def forward(self, dec_h, return_wgts: bool=False, init_wgts: torch.tensor=None):
+    def forward(self, dec_h, return_wgts: bool=False, init_wgts_mask: torch.tensor=None):
         """
             official forward for the decoder
             Args:
@@ -168,16 +168,14 @@ class MultiheadCrossAttention(nn.Module):
                             .unsqueeze(2))                                          # (batch_size, num_heads, 1, proj_dims_per_head)
         # [2] attention weights
         wgts_prenorm = torch.matmul(self.queries, self.keys) / self.norm_factor     # (batch_size, num_heads, 1, seq_len)
+        # add initial forcing if existed
+        if init_wgts_mask is not None:
+            wgts_prenorm *= init_wgts_mask
         min_val = torch.finfo(wgts_prenorm.dtype).min
         wgts_prenorm = wgts_prenorm.masked_fill(self.masks, min_val)                # (batch_size, num_heads, 1, seq_len)
         #     apply softmax & zero out trivial vals
         wgts_normed = (self.softmax(wgts_prenorm)
                            .masked_fill(self.masks, 0.0))                           # (batch_size, num_heads, 1, seq_len)
-        # add initial forcing if existed
-        if init_wgts is not None:
-            wgts_normed = self.softmax(wgts_prenorm + 10 * init_wgts).masked_fill(self.masks, 0.0)
-            wgts_normed_original = wgts_normed
-
         # [3] attended values
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
                            .squeeze(-2).contiguous()                                # (batch_size, num_heads, proj_dims_per_head)
@@ -185,10 +183,7 @@ class MultiheadCrossAttention(nn.Module):
         # [4] (optional) final linear layer
         att_values = self.final_map(self.locked_dropout(att_values))                # (batch_size, proj_dim)
 
-        if return_wgts:
-            return (att_values, wgts_normed_original) if init_wgts is not None else (att_values, wgts_normed)
-        else: 
-            att_values
+        return (att_values, wgts_normed) if return_wgts else att_values
 
 
 
@@ -323,11 +318,10 @@ class Speller(nn.Module):
         self.attention.wrapup_encodings(enc_h, enc_l)
 
         if init_force:
-            a_side, b_side = enc_max_len // 4 + 1, steps // 4 + 1
+            a_side, b_side = enc_max_len // 5 + 1, steps // 5 + 1
             areas = a_side * b_side
-            blocks = [torch.ones((a_side, b_side), device=enc_h.device) / areas for _ in range(4)]
+            blocks = [torch.ones((a_side, b_side), device=enc_h.device) for _ in range(5)]
             init_wgts = torch.block_diag(*blocks)[:enc_max_len, :steps]
-            init_wgts /= init_wgts.sum(dim=1)
 
         """
             priors: t = -1
@@ -369,7 +363,7 @@ class Speller(nn.Module):
             init_wgts_slice = None
             if init_force:
                 init_wgts_slice = init_wgts[:, t].expand(batch_size, self.att_heads, 1, enc_max_len)
-            context, att_wgts = self.attention(hiddens[-1][0], return_wgts=True, init_wgts=init_wgts_slice)
+            context, att_wgts = self.attention(hiddens[-1][0], return_wgts=True, init_wgts_mask=init_wgts_slice)
             # (batch_size, proj_dim), (batch_size, num_heads, 1, enc_seq_len)
         
             # concatenate last layer hidden states w/ context for char network to make a decision
