@@ -7,7 +7,7 @@ import shutil
 import numpy as np
 
 
-def extract_mini(root_dir: str='./data', out_dir: str='./mini', ratio=0.05):
+def extract_mini(root_dir: str='./data', out_dir: str='./mini', ratio=0.10):
     trn = f"{root_dir}/train-clean-100"
     val = f"{root_dir}/dev-clean"
 

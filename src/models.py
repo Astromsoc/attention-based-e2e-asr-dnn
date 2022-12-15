@@ -168,14 +168,17 @@ class MultiheadCrossAttention(nn.Module):
                             .unsqueeze(2))                                          # (batch_size, num_heads, 1, proj_dims_per_head)
         # [2] attention weights
         wgts_prenorm = torch.matmul(self.queries, self.keys) / self.norm_factor     # (batch_size, num_heads, 1, seq_len)
-        # add initial forcing if existed
-        if init_wgts_mask is not None:
-            wgts_prenorm *= init_wgts_mask
         min_val = torch.finfo(wgts_prenorm.dtype).min
         wgts_prenorm = wgts_prenorm.masked_fill(self.masks, min_val)                # (batch_size, num_heads, 1, seq_len)
         #     apply softmax & zero out trivial vals
         wgts_normed = (self.softmax(wgts_prenorm)
                            .masked_fill(self.masks, 0.0))                           # (batch_size, num_heads, 1, seq_len)
+        # add initial forcing if existed
+        if init_wgts_mask is not None:
+            wgts_normed_orignal = wgts_normed.detach().clone()
+            wgts_normed *= init_wgts_mask
+            # renorm
+            wgts_normed = self.softmax(wgts_normed)
         # [3] attended values
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
                            .squeeze(-2).contiguous()                                # (batch_size, num_heads, proj_dims_per_head)
@@ -183,7 +186,10 @@ class MultiheadCrossAttention(nn.Module):
         # [4] (optional) final linear layer
         att_values = self.final_map(self.locked_dropout(att_values))                # (batch_size, proj_dim)
 
-        return (att_values, wgts_normed) if return_wgts else att_values
+        if init_wgts_mask is not None:
+            return att_values, wgts_normed_orignal
+        else:
+            return (att_values, wgts_normed) if return_wgts else att_values
 
 
 
@@ -273,9 +279,9 @@ class Speller(nn.Module):
             nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True),
             nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True)
         )]
-        # classification layers
-        self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
-        self.act = nn.GELU()
+        # # classification layers
+        # self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
+        # self.act = nn.GELU()
         self.cls = nn.Linear(self.dec_emb_dim, self.dec_vocab_size)
         # weight tying
         self.cls.weight = self.char_emb.weight
@@ -318,9 +324,9 @@ class Speller(nn.Module):
         self.attention.wrapup_encodings(enc_h, enc_l)
 
         if init_force:
-            a_side, b_side = enc_max_len // 5 + 1, steps // 5 + 1
+            a_side, b_side = enc_max_len // 6 + 1, steps // 6 + 1
             areas = a_side * b_side
-            blocks = [torch.ones((a_side, b_side), device=enc_h.device) for _ in range(5)]
+            blocks = [torch.ones((a_side, b_side), device=enc_h.device) for _ in range(6)]
             init_wgts = torch.block_diag(*blocks)[:enc_max_len, :steps]
 
         """
@@ -349,8 +355,10 @@ class Speller(nn.Module):
             if self.training and t > 0:
                 if torch.rand(1).item() <= teacher_forcing_rate:
                     char_emb = gold_label_emb[:, t - 1, :]                          # (batch_size, dec_emb_dim)
-                char_emb = char_emb_mask * char_emb
-                context = context_mask * context
+                if self.dec_emb_dropout:
+                    char_emb = char_emb_mask * char_emb
+                if self.att_dropout:
+                    context = context_mask * context
             if self.training and t == 0:
                 # embedding dropout
                 char_emb, char_emb_mask = self.locked_dropout_withmask(char_emb, self.dec_emb_dropout)

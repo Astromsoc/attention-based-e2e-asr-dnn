@@ -73,13 +73,13 @@ class Trainer:
             self.model.parameters(), **trncfgs.optimizer.configs
         )
         # scheduler
-        self.batch_scheduler = (CosineAnnealingWithWarmup(
+        self.batch_scheduler = CosineAnnealingWithWarmup(
             self.optimizer, num_batches=len(self.trn_loader),
             **(self.trncfgs.batch_scheduler.configs)
-        ) if self.trncfgs.batch_scheduler.use else None)
+        ) if self.trncfgs.batch_scheduler.use else None
         self.epoch_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, factor=0.5, patience=4, mode='min'
-        )
+        ) if self.trncfgs.epoch_scheduler.use else None
         # tf rate scheduler
         if self.trncfgs.tf_rate_scheduler.use:
             self.tf_configs = self.trncfgs.tf_rate_scheduler.configs
@@ -89,6 +89,10 @@ class Trainer:
 
         # reset stats
         self.reset_stats()
+        # loading checkpoints
+        if self.trncfgs.finetune.use:
+            self.load_model()
+            self.reset_beststats()
 
 
     def train_epoch(self):
@@ -100,7 +104,7 @@ class Trainer:
         batch_bar = tqdm(total=len(self.trn_loader), dynamic_ncols=True, leave=False, 
                          position=0, desc=f'training epoch[{self.epoch}]...')
         # whether to apply init diag attention
-        init_force = self.init_force if self.epoch < 4 else False
+        init_force = self.init_force if self.epoch < 10 else False
         # loop
         for i, (x, y, lx, ly) in enumerate(self.trn_loader):
             # remove <sos> in the beginning of ys
@@ -225,8 +229,8 @@ class Trainer:
                 # greedy search
                 pred_chars = pred_logits.argmax(dim=-1)
                 # compute levenshtein distance
-                if self.epoch % self.eval_ld_interval == 0:
-                    total_ld += self.batch_levenshtein(pred_chars, y, ly)
+                # if self.eval_ld_interval == 1 or self.epoch % self.eval_ld_interval == 0:
+                total_ld += self.batch_levenshtein(pred_chars, y, ly)
 
                 # update batch_bar
                 batch_bar.set_postfix(
@@ -267,21 +271,18 @@ class Trainer:
             self.dev['loss'].append(dev_loss)
             self.dev['ppl'].append(dev_ppl)
             if dev_ld <= 0:
-                self.dev['ld'].append(self.dev['ld'][-1])
-            else:
-                self.dev['ld'].append(dev_ld)
+                dev_ld = self.dev['ld'][-1]
+            self.dev['ld'].append(dev_ld)
             # wandb logging
             if self.trncfgs.wandb.use:
                 wandb.log({'avg_trn_loss': trn_loss, 'avg_trn_ppl': trn_ppl,
-                           'dev_loss': dev_loss, 'dev_ppl': dev_ppl})
-                if dev_ld > 0:
-                    wandb.log({'dev_ld': dev_ld})
+                           'dev_loss': dev_loss, 'dev_ppl': dev_ppl, 'dev_ld': dev_ld})
             # save model
             self.save_model()
             self.epoch += 1
             # epoch-level lr scheduling
-            if self.epoch_scheduler:
-                self.epoch_scheduler.step(dev_loss)
+            if self.dev['ld'][-1] <= 20 and self.epoch_scheduler:
+                self.epoch_scheduler.step(dev_ld)
                 if self.trncfgs.wandb.use:
                     wandb.log({'learning-rate': self.optimizer.param_groups[0]['lr']})
 
@@ -336,12 +337,40 @@ class Trainer:
                 fn = [c for c in ckpts if c.endswith(f"epoch[{no}].pt")][0]
                 os.remove(f"{self.saving_dir}/ckpts/{fn}")
             # save new
-            torch.save(epoch_record | {
+            epoch_record.update({
                 'model_state_dict': self.model.state_dict(),
                 'optimizer_state_dict': self.optimizer.state_dict(),
-            }, f"{self.saving_dir}/ckpts/minloss-epoch[{self.epoch}].pt")
+            })
+            # add training & validation histories
+            epoch_record.update({
+                'train_loss': self.train['loss'], 'train_ppl': self.train['ppl'], 
+                'dev_loss': self.dev['loss'], 'dev_ppl': self.dev['ppl'], 'dev_ld': self.dev['ld']
+            })
+            torch.save(epoch_record, f"{self.saving_dir}/ckpts/minloss-epoch[{self.epoch}].pt")
             self.saved_epochs.append(self.epoch)
             print(f"\nBest model saved: epoch[{self.epoch}], tag=[{tag}]\n")
+    
+
+    def load_model(self):
+        assert self.trncfgs.finetune.use
+        assert os.path.exists(self.trncfgs.finetune.checkpoint)
+        loaded = torch.load(self.trncfgs.finetune.checkpoint, map_location=torch.device(self.device))
+        self.model.load_state_dict(loaded['model_state_dict'])
+        self.optimizer.load_state_dict(loaded['optimizer_state_dict'])
+        self.epoch = loaded['epoch']
+        self.batch = loaded['batch']
+        for d in (self.min_ld, self.min_loss, self.min_ppl):
+            d['loss'] = loaded['loss']
+            d['ppl'] = loaded['ppl']
+            d['ld'] = loaded['ld']
+        # historical records
+        self.train['loss'] = loaded['train_loss']
+        self.train['ppl'] = loaded['train_ppl']
+        self.dev['loss'] = loaded['dev_loss']
+        self.dev['ppl'] = loaded['dev_ppl']
+        self.dev['ld'] = loaded['dev_ld']
+        print(f"\n\nSuccessfully loaded from checkpoint [{self.trncfgs.finetune.checkpoint}]!")
+        print(f"Resuming traninig from epoch[{self.epoch}]!\n\n")
     
 
     @staticmethod
@@ -399,7 +428,7 @@ class Trainer:
     
 
     def tf_rate_step(self):
-        if self.epoch > 0 and self.dev['ld'][-1] <= 20:
+        if self.epoch > 0 and self.dev['ld'][-1] <= 20 and self.tf_rate > 0.6:
             self.tf_rate -= self.trncfgs.tf_rate_scheduler.configs['factor']
     
 
