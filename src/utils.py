@@ -80,8 +80,8 @@ class datasetTrainDev(Dataset):
 
         # transforms
         if self.useSpecAug:
-            self.freq_masker = tat.FrequencyMasking(2)
-            self.time_masker = tat.TimeMasking(10)
+            self.freq_masker = tat.FrequencyMasking(5)
+            self.time_masker = tat.TimeMasking(200)
 
     
     def __len__(self):
@@ -122,9 +122,9 @@ class datasetTrainDev(Dataset):
         
         # apply augmentation
         if self.useSpecAug:
-            mfccs = self.time_masker(self.time_masker(self.time_masker(
-                        self.freq_masker(mfccs.transpose(-2, -1)
-            ))).transpose(-2, -1)
+            mfccs = self.time_masker(self.freq_masker(
+                mfccs.transpose(-2, -1)
+            )).transpose(-2, -1)
         
         return mfccs, transcripts, torch.tensor(mfcc_lens), torch.tensor(transcript_lens)
 
@@ -223,8 +223,8 @@ class datasetTrainDevToy(Dataset):
         self.freq_masker = None
         self.time_masker = None
         if self.use_specaug:
-            self.freq_masker = tat.FrequencyMasking(2)
-            self.time_masker = tat.TimeMasking(2)
+            self.freq_masker = tat.FrequencyMasking(3)
+            self.time_masker = tat.TimeMasking(5)
 
     
     def __len__(self):
@@ -246,9 +246,9 @@ class datasetTrainDevToy(Dataset):
         y_batch_pad = pad_sequence(y_batch, batch_first=True, padding_value=self.EOS_IDX) 
 
         if self.use_specaug:
-            x_batch_pad = self.time_masker(self.time_masker(self.time_masker(
-                        self.freq_masker(x_batch_pad)
-            )))
+            x_batch_pad = self.time_masker(
+                        self.freq_masker(mfccs.transpose(-2, -1))
+            ).transpose(-2, -1)
         
         return x_batch_pad, y_batch_pad, torch.tensor(x_lens), torch.tensor(y_lens)
 
