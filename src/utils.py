@@ -176,9 +176,6 @@ class datasetTest(Dataset):
         mfccs = batch
         # obtain original lengths
         mfcc_lens = torch.tensor([len(m) for m in mfccs])
-        # sort the mfccs given lengths
-        idx = sorted(np.arange(len(mfccs)), key=lambda x: len(mfccs[x]), reverse=True)
-        mfccs = [mfccs[i] for i in idx]
         # pad 
         mfccs = pad_sequence(
             mfccs, batch_first=True, padding_value=mfcc_padding

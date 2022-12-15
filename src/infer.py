@@ -35,7 +35,7 @@ def idx_to_str(idx_seq, vocab: list, sos_idx: int, eos_idx: int):
 
 def infer_one_checkpoint(
         model_cfgs, tstcfgs, checkpoint_filepath, tst_loader, 
-        template_filepath, scaler, device, VOCAB, EOS_IDX, SOS_IDX
+        template_filepath, scaler, device, VOCAB, SOS_IDX, EOS_IDX
     ):
 
     print(f"\n\nRunning inference on checkpoint [{checkpoint_filepath}]...\n")
@@ -61,14 +61,14 @@ def infer_one_checkpoint(
                 pred_logits, att_wgts = model(x, lx)
         else:
             pred_logits, att_wgts = model(x, lx)
-        
+
         # obtain batch predictions
         if tstcfgs.use_greedy:
             batch_preds = [idx_to_str(pl.argmax(-1), VOCAB, SOS_IDX, EOS_IDX) for pl in pred_logits]
         all_preds.extend(batch_preds)
 
     # output csv filename: adapted from checkpoint name
-    out_filepath = checkpoint_filepath.replace('.pt', '_pred.csv')
+    out_filepath = checkpoint_filepath.replace('.pt', '-pred.csv')
     # generate csv file
     raw_df = pd.read_csv(template_filepath)
     raw_df.label = all_preds
