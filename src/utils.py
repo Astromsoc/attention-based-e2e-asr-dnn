@@ -81,7 +81,7 @@ class datasetTrainDev(Dataset):
         # transforms
         if self.useSpecAug:
             self.freq_masker = tat.FrequencyMasking(2)
-            self.time_masker = tat.TimeMasking(30)
+            self.time_masker = tat.TimeMasking(10)
 
     
     def __len__(self):
@@ -123,8 +123,8 @@ class datasetTrainDev(Dataset):
         # apply augmentation
         if self.useSpecAug:
             mfccs = self.time_masker(self.time_masker(self.time_masker(
-                        self.freq_masker(mfccs)
-            )))
+                        self.freq_masker(mfccs.transpose(-2, -1)
+            ))).transpose(-2, -1)
         
         return mfccs, transcripts, torch.tensor(mfcc_lens), torch.tensor(transcript_lens)
 
@@ -348,6 +348,7 @@ def compute_levenshtein(h, y, lh, ly, decoder, LABELS):
         true_str = ''.join(LABELS[l] for l in y[b, :ly[b]])
         total_dist += distance(pred_str, true_str)
     return total_dist / batchSize
+
 
 
 def pay_attention_multihead(att_wgts, epoch: int, root_dir: str='.'):

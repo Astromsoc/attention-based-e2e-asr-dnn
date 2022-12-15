@@ -8,16 +8,16 @@ EXP_FOLDER: experiments
 # training
 # ------------------------------------------------
 seed: 11785
-epochs: 60
-batch_size: 128
+epochs: 200
+batch_size: 400
 num_workers: 15
-accu_grad: 6
+accu_grad: 1
 grad_norm: 10.0
-eval_ld_interval: 4
-init_force: true
+eval_ld_interval: 1
+init_force: false
 tf_rate: 1.0
 max_savings: 3
-use_specaug: true
+use_specaug: false
 
 # wandb
 # ------------------------------------------------
@@ -27,6 +27,13 @@ wandb:
     project: hw4-full
     reinit: true
     entity: Astromsoc
+    
+# finetuning
+# ------------------------------------------------
+finetune:
+  use: true
+  checkpoint: experiments/logical-donkey-23/ckpts/minloss-epoch[179].pt
+
 
 # configurations to train the model
 # ------------------------------------------------
@@ -35,25 +42,25 @@ model:
   configs:
     listener_configs:
       input_dim: 15
-      uniform_hid_dim: 512
+      uniform_hid_dim: 256
       lstm_layers: 1
       plstm_layers: 3
       bidirectional: true
-      init_dropout: 0.2
-      mid_dropout: 0.25
-      final_dropout: 0.3
+      init_dropout: 0.1
+      mid_dropout: 0.1
+      final_dropout: 0.1
     speller_configs:
       # encoder + attention
-      att_proj_dim: 256
+      att_proj_dim: 128
       att_heads: 1
-      att_dropout: 0.3
+      att_dropout: 0
       # decoder embeddings
-      dec_emb_dim: 512
-      dec_emb_dropout: 0.4
+      dec_emb_dim: 256
+      dec_emb_dropout: 0
       # decoder lstm cells
       dec_lstm_hid_dim: 512
-      dec_lstm_out_dim: 256
-      dec_lstm_dropout: 0.3
+      dec_lstm_out_dim: 128
+      dec_lstm_dropout: 0.1
       # trivials
       CHR_MAX_STEPS: 600
       USE_GREEDY: true
@@ -84,15 +91,19 @@ epoch_scheduler:
 tf_rate_scheduler:
   use: true
   configs:
-    factor: 0.015
+    factor: 0.05
+    interval: 5
 
 # dropout scheduler
 dropout_scheduler:
   use: true
   configs:
-    0: 0.2
-    5: 4
-    20: 1.25
-    40: 0.5
+    0: 0.01
+    30: 80
+    50: 1.25
+    75: 0.8
+    85: 0.8
+    95: 0.8
+    105: 1.25
 
 # criterion: fixed to CrossEntropyLoss(reduction='none')

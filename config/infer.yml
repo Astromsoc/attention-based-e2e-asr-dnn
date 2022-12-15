@@ -2,19 +2,19 @@
 TST_FOLDER: data/test-clean
 
 # checkpoints
-exp_folder: experiments/221214-135709
+exp_folder: experiments/logical-donkey-23
 use_greedy: true
 
 # trivials
-batch_size: 96
-num_workers: 4
+batch_size: 24
+num_workers: 15
 
 # loading options
 run_all: false
 
 # IF NOT run all
-epoch_num: -1
+epoch_num: 166
 # make sure it exists under ckpts/ folder
 
 # whether to load averages
-run_avg: true
+run_avg: false

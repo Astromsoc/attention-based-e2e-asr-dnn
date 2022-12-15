@@ -35,7 +35,7 @@ def idx_to_str(idx_seq, vocab: list, sos_idx: int, eos_idx: int):
 
 def infer_one_checkpoint(
         model_cfgs, tstcfgs, checkpoint_filepath, tst_loader, 
-        template_filepath, scaler, LABELS, device, VOCAB, EOS_IDX, SOS_IDX
+        template_filepath, scaler, device, VOCAB, EOS_IDX, SOS_IDX
     ):
 
     print(f"\n\nRunning inference on checkpoint [{checkpoint_filepath}]...\n")
@@ -94,13 +94,11 @@ def main(args):
     # load configs & model checkpoints from given experiment folder
     model_cfgs = cfgClass(yaml.safe_load(open(f"{exp_folder}/config.json", 'r')))
 
-    use_mini = False
-    if model_cfgs.TRN_FOLDER.startswith('mini'):
-        use_min = True
-        VOCAB = model_cfgs.VOCAB
-        VOCAB_MAP = model_cfgs.VOCAB_MAP
-        EOS_IDX = model_cfgs.EOS_IDX
-        SOS_IDX = model_cfgs.SOS_IDX
+    use_mini = True if model_cfgs.TRN_FOLDER.startswith('mini') else False
+    VOCAB = model_cfgs.VOCAB
+    VOCAB_MAP = model_cfgs.VOCAB_MAP
+    EOS_IDX = model_cfgs.EOS_IDX
+    SOS_IDX = model_cfgs.SOS_IDX
 
     """
         load data & build data loaders
@@ -139,14 +137,14 @@ def main(args):
             infer_one_checkpoint(
                 model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
                 tst_loader=tstLoader, template_filepath=test_template_filepath,
-                scaler=scaler, LABELS=VOCAB, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
+                scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
             )
     elif f"-epoch[{tstcfgs.epoch_num}].pt" in ' '.join(ckpts):
         fp = [f for f in ckpts if f.endswith(f"-epoch[{tstcfgs.epoch_num}].pt")][0]
         infer_one_checkpoint(
             model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
             tst_loader=tstLoader, template_filepath=test_template_filepath,
-            scaler=scaler, LABELS=VOCAB, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
+            scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
         )
     
     if tstcfgs.run_avg:
@@ -168,7 +166,7 @@ def main(args):
         infer_one_checkpoint(
             model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/avg-all.pt", 
             tst_loader=tstLoader, template_filepath=test_template_filepath,
-            scaler=scaler, LABELS=VOCAB, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
+            scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
         )
 
 

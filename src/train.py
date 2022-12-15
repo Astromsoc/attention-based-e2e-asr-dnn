@@ -363,12 +363,12 @@ class Trainer:
             d['loss'] = loaded['loss']
             d['ppl'] = loaded['ppl']
             d['ld'] = loaded['ld']
-        # historical records
-        self.train['loss'] = loaded['train_loss']
-        self.train['ppl'] = loaded['train_ppl']
-        self.dev['loss'] = loaded['dev_loss']
-        self.dev['ppl'] = loaded['dev_ppl']
-        self.dev['ld'] = loaded['dev_ld']
+        # historical records: if exists
+        self.train['loss'] = loaded.get('train_loss', list())
+        self.train['ppl'] = loaded.get('train_ppl', list())
+        self.dev['loss'] = loaded.get('dev_loss', list())
+        self.dev['ppl'] = loaded.get('dev_ppl', list())
+        self.dev['ld'] = loaded.get('dev_ld', list())
         print(f"\n\nSuccessfully loaded from checkpoint [{self.trncfgs.finetune.checkpoint}]!")
         print(f"Resuming traninig from epoch[{self.epoch}]!\n\n")
     
@@ -428,8 +428,9 @@ class Trainer:
     
 
     def tf_rate_step(self):
-        if self.epoch > 0 and self.dev['ld'][-1] <= 20 and self.tf_rate > 0.6:
-            self.tf_rate -= self.trncfgs.tf_rate_scheduler.configs['factor']
+        if self.epoch > 0 and self.dev['ld'] and self.dev['ld'][-1] <= 20 and self.tf_rate > 0.6:
+            if self.epoch % self.trncfgs.configs['interval'] == 0:
+                self.tf_rate -= self.trncfgs.tf_configs['factor']
     
 
     def dropout_step(self):

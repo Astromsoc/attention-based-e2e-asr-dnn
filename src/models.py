@@ -280,8 +280,8 @@ class Speller(nn.Module):
             nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True)
         )]
         # # classification layers
-        # self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
-        # self.act = nn.GELU()
+        self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
+        self.act = nn.GELU()
         self.cls = nn.Linear(self.dec_emb_dim, self.dec_vocab_size)
         # weight tying
         self.cls.weight = self.char_emb.weight
@@ -377,9 +377,9 @@ class Speller(nn.Module):
             # concatenate last layer hidden states w/ context for char network to make a decision
             projected_queries = self.attention.queries.view(batch_size, -1)
             dec_out = torch.cat((projected_queries, context), dim=-1)               # (batch_size, dec_out_dim + att_proj_dim)
-            # char_logits = self.cls(self.act(self.gap(dec_out)))                     
+            char_logits = self.cls(self.act(self.gap(dec_out)))                     
             # (batch_size, dec_out_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
-            char_logits = self.cls(dec_out)
+            # char_logits = self.cls(dec_out)
 
             # add logits
             pred_logits.append(char_logits)                                         # (batch_size, dec_max_len, vocab_size)
