@@ -195,10 +195,11 @@ class pyramLockedLSTM(nn.Module):
 
 
 
-class AutoRegDecoderLSTMCell(nn.Module):
+class AutoRegDecoderLSTMCellConcat(nn.Module):
     """
         Autoregressive decoder LSTM cells with cross attention contexts.
             Note: 2 layers version only
+            Note2: concatenate both hidden states and cell states for 2nd cell
     """
     def __init__(
         self,
@@ -259,6 +260,83 @@ class AutoRegDecoderLSTMCell(nn.Module):
                 prev_ec = self.locked_dropout(torch.cat(
                     prev_h[i], dim=-1
                 ), self.dec_mid_dropout)
+
+        return prev_h
+        # List[(h, c)]
+        # (batch_size, dec_out_dim), (batch_size, dec_out_dim)
+
+        
+        
+        
+class AutoRegDecoderLSTMCell(nn.Module):
+    """
+        Autoregressive decoder LSTM cells with cross attention contexts.
+            Note: 2 layers version only
+            Note2: only use hidden state for 2nd cell
+    """
+    def __init__(
+        self,
+        att_proj_dim: int=128,
+        dec_emb_dim: int=256,
+        dec_hid_dim: int=512,
+        dec_out_dim: int=128,
+        dec_mid_dropout: float=0.2
+    ):
+        super().__init__()
+        self.att_proj_dim = att_proj_dim
+        self.dec_emb_dim = dec_emb_dim
+        self.dec_hid_dim = dec_hid_dim
+        self.dec_out_dim = dec_out_dim
+        self.dec_mid_dropout = dec_mid_dropout
+
+        # original lstms
+        self.lstms = nn.ModuleList([
+            nn.LSTMCell(
+                # input: [context, char_embedding]
+                input_size=self.att_proj_dim + self.dec_emb_dim,
+                hidden_size=self.dec_hid_dim,
+            ),
+            nn.LSTMCell(
+                # input: [hidden_state]
+                input_size=self.dec_hid_dim,
+                hidden_size=self.dec_out_dim
+            )
+        ])
+
+
+    def locked_dropout(self, x, p: float=0.0):
+        if (not self.training) or (not p):
+            return x
+        mask = x.new_empty(
+            1, x.size(1), requires_grad=False
+        ).bernoulli_(1 - p).div_(1 - p).expand_as(x)
+        return x * mask
+
+
+    def forward(self, prev_e, prev_c, prev_h, mask_ec=None, mask_h=None):
+        """
+            Args:
+                prev_e: (batch_size, dec_emb_dim) character embeddings, previous step
+                prev_c: (batch_size, proj_dim) context, previous step
+                prev_h: List[(batch_size, dec_hid_dim)] hidden states for all layers, previous step
+                mask_ec: the same mask applied along all the time for embedding & context
+                mask_h: the same mask applied along all the time for hidden stats
+        """
+        # original inputs: character emb & context from last time step
+        prev_ec = torch.cat([prev_e, prev_c], dim=1)
+        # (batch_size, dec_emb_dim + proj_dim)
+        if self.training and mask_ec is not None:
+            prev_ec *= mask_ec
+
+        # iterate
+        for i in range(len(self.lstms)):
+            prev_h[i] = self.lstms[i](prev_ec, prev_h[i])
+            # apply only to the output of the 1st lstm cell
+            if i == 0:
+                # encode respectivly
+                prev_ec = prev_h[i][0]
+                if self.training and mask_h is not None:
+                    prev_ec *= mask_h
 
         return prev_h
         # List[(h, c)]

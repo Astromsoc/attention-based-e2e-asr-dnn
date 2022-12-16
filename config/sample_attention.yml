@@ -9,7 +9,7 @@ EXP_FOLDER: experiments
 # ------------------------------------------------
 seed: 11785
 epochs: 200
-batch_size: 400
+batch_size: 96
 num_workers: 15
 accu_grad: 1
 grad_norm: 10.0
@@ -31,7 +31,7 @@ wandb:
 # finetuning
 # ------------------------------------------------
 finetune:
-  use: true
+  use: false
   checkpoint: experiments/logical-donkey-23/ckpts/minloss-epoch[179].pt
 
 
@@ -42,25 +42,25 @@ model:
   configs:
     listener_configs:
       input_dim: 15
-      uniform_hid_dim: 256
+      uniform_hid_dim: 512
       lstm_layers: 1
       plstm_layers: 3
       bidirectional: true
-      init_dropout: 0.1
-      mid_dropout: 0.1
-      final_dropout: 0.1
+      init_dropout: 0.35
+      mid_dropout: 0.35
+      final_dropout: 0.4
     speller_configs:
       # encoder + attention
-      att_proj_dim: 128
+      att_proj_dim: 256
       att_heads: 1
-      att_dropout: 0
+      att_dropout: 0.3
       # decoder embeddings
       dec_emb_dim: 256
-      dec_emb_dropout: 0
+      dec_emb_dropout: 0.3
       # decoder lstm cells
       dec_lstm_hid_dim: 512
-      dec_lstm_out_dim: 128
-      dec_lstm_dropout: 0.1
+      dec_lstm_out_dim: 256
+      dec_lstm_dropout: 0.2
       # trivials
       CHR_MAX_STEPS: 600
       USE_GREEDY: true
