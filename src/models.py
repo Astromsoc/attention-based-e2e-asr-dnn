@@ -280,7 +280,7 @@ class Speller(nn.Module):
             nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True)
         )]
         # # classification layers
-        self.gap = nn.Linear(self.dec_lstm_out_dim + self.att_proj_dim, self.dec_emb_dim)
+        self.gap = nn.Linear(2 * self.att_proj_dim, self.dec_emb_dim)
         self.act = nn.GELU()
         self.cls = nn.Linear(self.dec_emb_dim, self.dec_vocab_size)
         # weight tying
@@ -347,13 +347,6 @@ class Speller(nn.Module):
         
         # bookkeeping
         att_wgts_list = [att_wgts[0].detach().cpu()]                                # (num_heads, 1, enc_seq_len)
-        # new mask for all ec inputs & hidden states
-        mask_ec, mask_h = None, None
-        if self.training:
-            mask_ec = (context.new_empty(batch_size, self.dec_emb_dim + self.att_proj_dim)
-                              .bernoulli_(1 - self.dec_lstm_dropout).div_(1 - self.dec_lstm_dropout))
-            mask_h = (context.new_empty(batch_size, self.dec_lstm_hid_dim)
-                             .bernoulli_(1 - self.dec_lstm_dropout).div_(1 - self.dec_lstm_dropout))
         # loop
         for t in range(steps):
             # get character embeddings from prev step
@@ -373,7 +366,7 @@ class Speller(nn.Module):
                 context, context_mask = self.locked_dropout_withmask(context, self.att_dropout)
 
             # input for decoder: char emb + context, prev step
-            hiddens = self.lstms(char_emb, context, hiddens, mask_ec, mask_h)
+            hiddens = self.lstms(char_emb, context, hiddens)
             # context
             init_wgts_slice = None
             if init_force:
