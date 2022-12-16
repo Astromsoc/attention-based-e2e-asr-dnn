@@ -224,7 +224,7 @@ class AutoRegDecoderLSTMCell(nn.Module):
             ),
             nn.LSTMCell(
                 # input: [hidden_state, cell_state]
-                input_size=self.dec_hid_dim,
+                input_size=self.dec_hid_dim * 2,
                 hidden_size=self.dec_out_dim
             )
         ])
@@ -256,7 +256,9 @@ class AutoRegDecoderLSTMCell(nn.Module):
             # apply only to the output of the 1st lstm cell
             if i == 0:
                 # encode respectivly
-                prev_ec = self.locked_dropout(prev_h[i][0], self.dec_mid_dropout)
+                prev_ec = self.locked_dropout(torch.cat(
+                    prev_h[i], dim=-1
+                ), self.dec_mid_dropout)
 
         return prev_h
         # List[(h, c)]

@@ -378,7 +378,7 @@ class Speller(nn.Module):
             projected_queries = self.attention.queries.view(batch_size, -1)
             dec_out = torch.cat((projected_queries, context), dim=-1)               # (batch_size, dec_out_dim + att_proj_dim)
             # gumbel softmax added
-            char_logits = nn.functional.gumbel_softmax(self.cls(self.act(self.gap(dec_out))))                   
+            char_logits = self.cls(self.act(self.gap(dec_out)))                
             # (batch_size, dec_out_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
             # char_logits = self.cls(dec_out)
             
