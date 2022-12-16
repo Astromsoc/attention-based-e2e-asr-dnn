@@ -436,6 +436,7 @@ class Trainer:
     def dropout_step(self):
         if self.epoch in self.dropout_configs.keys():
             ratio = self.dropout_configs[self.epoch]
+            print(f"\n\nChange the dropout rate by [{ratio}] in epoch [{self.epoch}]!\n\n")
         else:
             return
         # reset all dropouts

@@ -347,6 +347,13 @@ class Speller(nn.Module):
         
         # bookkeeping
         att_wgts_list = [att_wgts[0].detach().cpu()]                                # (num_heads, 1, enc_seq_len)
+        # new mask for all ec inputs & hidden states
+        mask_ec, mask_h = None, None
+        if self.training and self.dec_lstm_dropout:
+            mask_ec = (context.new_empty(batch_size, self.dec_emb_dim + self.att_proj_dim)
+                              .bernoulli_(1 - self.dec_lstm_dropout).div_(1 - self.dec_lstm_dropout))
+            mask_h = (context.new_empty(batch_size, self.dec_lstm_hid_dim)
+                             .bernoulli_(1 - self.dec_lstm_dropout).div_(1 - self.dec_lstm_dropout))
         # loop
         for t in range(steps):
             # get character embeddings from prev step

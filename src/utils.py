@@ -80,7 +80,7 @@ class datasetTrainDev(Dataset):
 
         # transforms
         if self.useSpecAug:
-            self.freq_masker = tat.FrequencyMasking(5)
+            self.freq_masker = tat.FrequencyMasking(6)
             self.time_masker = tat.TimeMasking(200)
 
     
