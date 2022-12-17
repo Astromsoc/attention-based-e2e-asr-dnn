@@ -319,11 +319,11 @@ class Trainer:
             # update results
             self.min_loss.update(epoch_record)
             tag += '-loss'
-        elif epoch_record['ld'] < self.min_ld['ld']:
+        if epoch_record['ld'] < self.min_ld['ld']:
             # update results
             self.min_ld.update(epoch_record)
             tag += '-ld'
-        elif epoch_record['ppl'] <= self.min_ppl['ppl']:
+        if epoch_record['ppl'] <= self.min_ppl['ppl']:
             # update results
             self.min_ppl.update(epoch_record)
             tag += '-ppl'
@@ -573,7 +573,7 @@ def main(args):
     model.to(device)
     
     # model summary
-    show_computation_model_summary = False
+    show_computation_model_summary = True
     if show_computation_model_summary:
         model.eval()
         x, _, lx, _ = next(iter(trnLoader))

@@ -183,8 +183,8 @@ class MultiheadCrossAttention(nn.Module):
         att_values = (torch.matmul(wgts_normed, self.values)                        # (batch_size, num_heads, 1, proj_dims_per_head)
                            .squeeze(-2).contiguous()                                # (batch_size, num_heads, proj_dims_per_head)
                            .view(batch_size, -1))                                   # (batch_size, proj_dim)
-        # [4] (optional) final linear layer
-        att_values = self.final_map(self.locked_dropout(att_values))                # (batch_size, proj_dim)
+        # # [4] (optional) final linear layer
+        # att_values = self.final_map(self.locked_dropout(att_values))                # (batch_size, proj_dim)
 
         if init_wgts_mask is not None:
             return att_values, wgts_normed_orignal
@@ -280,8 +280,8 @@ class Speller(nn.Module):
             nn.Parameter(torch.zeros((1, self.dec_lstm_out_dim)), requires_grad=True)
         )]
         # # classification layers
-        self.gap = nn.Linear(2 * self.att_proj_dim, self.dec_emb_dim)
-        self.act = nn.GELU()
+        # self.gap = nn.Linear(2 * self.att_proj_dim, self.dec_emb_dim)
+        # self.act = nn.GELU()
         self.cls = nn.Linear(self.dec_emb_dim, self.dec_vocab_size)
         # weight tying
         self.cls.weight = self.char_emb.weight
@@ -298,6 +298,95 @@ class Speller(nn.Module):
         
 
     def forward(self, enc_h, enc_l, dec_y=None, teacher_forcing_rate: float=1, init_force: bool=False):
+        """
+            Args:
+                enc_h: (batch_size, enc_seq_len, enc_output_dim) encoder outputs
+                enc_l: (batch_size, ) encoder output lengths
+                dec_y: (batch_size, dec_seq_len) decoder outputs for training
+                teacher_forcing_rate: (float) how much of teacher forcing to apply
+        """
+        batch_size, enc_max_len, enc_dim = enc_h.size()
+
+        # teacher forcing during training
+        if self.training:
+            steps = dec_y.size(-1)
+            gold_label_emb = self.char_emb(dec_y)                                   # (batch_size, dec_seq_len, dec_emb_dim)
+        else:
+            steps = self.CHR_MAX_STEPS
+        
+        # all prediction logits saved in one list
+        pred_logits = list()
+
+        """
+            initiate attention for the encoded inputs
+        """
+        # attention keys & vals for encoder
+        self.attention.wrapup_encodings(enc_h, enc_l)
+
+        if init_force:
+            a_side, b_side = enc_max_len // 6 + 1, steps // 6 + 1
+            areas = a_side * b_side
+            blocks = [torch.ones((a_side, b_side), device=enc_h.device) for _ in range(6)]
+            init_wgts = torch.block_diag(*blocks)[:enc_max_len, :steps]
+
+        """
+            priors: t = -1
+        """
+        # first character: <sos>
+        char = torch.full((batch_size, ), fill_value=self.CHR_SOS_IDX, 
+                           dtype=torch.long, device=enc_h.device)                   # (batch_size, )
+        # initial hidden states
+        hiddens = [None, None]
+        hiddens[0] = [u.expand(batch_size, self.dec_lstm_hid_dim).to(enc_h.device) 
+                      for u in self.init_hiddens[0]]
+        hiddens[1] = [u.expand(batch_size, self.dec_lstm_out_dim).to(enc_h.device) 
+                      for u in self.init_hiddens[1]]
+        # initial query & context
+        init_query = self.init_query.expand(batch_size, self.dec_lstm_out_dim).to(enc_h.device)
+        context, att_wgts = self.attention(init_query, return_wgts=True)
+        
+        # bookkeeping
+        att_wgts_list = [att_wgts[0].detach().cpu()]                                # (num_heads, 1, enc_seq_len)
+
+        # loop
+        for t in range(steps):
+            # get character embeddings from prev step
+            char_emb = self.char_emb(char)                                          # (batch_size, dec_emb_dim)
+            # teacher forcing if wanted
+            if self.training and t > 0:
+                if torch.rand(1).item() <= teacher_forcing_rate:
+                    char_emb = gold_label_emb[:, t - 1, :]                          # (batch_size, dec_emb_dim)
+
+            # input for decoder: char emb + context, prev step
+            hiddens = self.lstms(char_emb, context, hiddens)
+            # context
+            init_wgts_slice = None
+            if init_force:
+                init_wgts_slice = init_wgts[:, t].expand(batch_size, self.att_heads, 1, enc_max_len)
+            context, att_wgts = self.attention(hiddens[-1][0], return_wgts=True, init_wgts_mask=init_wgts_slice)
+            # (batch_size, proj_dim), (batch_size, num_heads, 1, enc_seq_len)
+        
+            # concatenate last layer hidden states w/ context for char network to make a decision
+            projected_queries = self.attention.queries.view(batch_size, -1)
+            dec_out = torch.cat((projected_queries, context), dim=-1)               # (batch_size, dec_out_dim + att_proj_dim)     
+            # (batch_size, dec_out_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
+            char_logits = self.cls(dec_out)
+            
+            # add logits
+            pred_logits.append(char_logits)                                         # (batch_size, dec_max_len, vocab_size)
+            att_wgts_list.append(att_wgts[0].detach().cpu())                        # (num_heads, 1, enc_seq_len)
+
+            # obtain the char to input for next timestep: greedy search
+            char = char_logits.argmax(-1)                                           # (batch_size, )
+        
+        # concatenate all the predicted char logits across time
+        pred_logits = torch.stack(pred_logits, dim=1)                               # (batch_size, dec_max_len, vocab_size)
+        # concatenate all the attention maps
+        att_wgts_list = torch.cat(att_wgts_list, dim=1).transpose(-2, -1)           # (num_heads, dec_max_len, enc_seq_len)
+        return pred_logits, att_wgts_list
+
+
+    def forward_with_extra_masks(self, enc_h, enc_l, dec_y=None, teacher_forcing_rate: float=1, init_force: bool=False):
         """
             Args:
                 enc_h: (batch_size, enc_seq_len, enc_output_dim) encoder outputs
@@ -389,7 +478,6 @@ class Speller(nn.Module):
             # (batch_size, dec_out_dim + att_proj_dim) --> (batch_size, dec_emb_dim) --> (batch_size, vocab_size)
             # char_logits = self.cls(dec_out)
             
-
             # add logits
             pred_logits.append(char_logits)                                         # (batch_size, dec_max_len, vocab_size)
             att_wgts_list.append(att_wgts[0].detach().cpu())                        # (num_heads, 1, enc_seq_len)
@@ -462,7 +550,7 @@ if __name__ == '__main__':
     ENC_PLSTM_LAYERS = 3
     ENC_BIDIRECTIONAL = True
 
-    ENC_HID_DIM = 256
+    ENC_HID_DIM = 512
     ENC_INIT_DROPOUT = 0.2
     ENC_MID_DROPOUT = 0.3
     ENC_FINAL_DROPOUT = 0.3
@@ -470,18 +558,18 @@ if __name__ == '__main__':
     """
         attention
     """
-    ATT_PROJ_DIM = 128
-    ATT_HEADS = 4
+    ATT_PROJ_DIM = 256
+    ATT_HEADS = 1
     ATT_DROPOUT = 0.2
 
 
     """
         decoder
     """
-    DEC_EMB_DIM = 256
-    DEC_EMB_DROPOUT = 0.2
+    DEC_EMB_DIM = 512
+    DEC_EMB_DROPOUT = 0.0
     DEC_LSTM_HID_DIM = 512
-    DEC_LSTM_OUT_DIM = 128
+    DEC_LSTM_OUT_DIM = 256
     DEC_LSTM_DROPOUT = 0.2
     VOCAB = [
         '<sos>', 'A', 'B', 'C', 'D', 'E', 

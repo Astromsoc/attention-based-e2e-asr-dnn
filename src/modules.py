@@ -264,8 +264,39 @@ class AutoRegDecoderLSTMCellConcat(nn.Module):
         return prev_h
         # List[(h, c)]
         # (batch_size, dec_out_dim), (batch_size, dec_out_dim)
+    
 
-        
+    def forward_extra_masks(self, prev_e, prev_c, prev_h, mask_ec=None, mask_h=None):
+        """
+            Args:
+                prev_e: (batch_size, dec_emb_dim) character embeddings, previous step
+                prev_c: (batch_size, proj_dim) context, previous step
+                prev_h: List[(batch_size, dec_hid_dim)] hidden states for all layers, previous step
+                mask_ec: the same mask applied along all the time for embedding & context
+                mask_h: the same mask applied along all the time for hidden stats
+        """
+        # original inputs: character emb & context from last time step
+        prev_ec = torch.cat([prev_e, prev_c], dim=1)
+        # (batch_size, dec_emb_dim + proj_dim)
+        if self.training and mask_ec is not None:
+            prev_ec *= mask_ec
+
+        # iterate
+        for i in range(len(self.lstms)):
+            (h, c) = self.lstms[i](prev_ec, prev_h[i])
+            h = self.dropout(h)
+            prev_h[i] = (h, c)
+            # apply only to the output of the 1st lstm cell
+            if i == 0:
+                # encode respectivly
+                prev_ec = prev_h[i][0]
+                if self.training and mask_h is not None:
+                    prev_ec *= mask_h
+
+        return prev_h
+        # List[(h, c)]
+        # (batch_size, dec_out_dim), (batch_size, dec_out_dim)
+
         
         
 class AutoRegDecoderLSTMCell(nn.Module):
@@ -303,17 +334,10 @@ class AutoRegDecoderLSTMCell(nn.Module):
             )
         ])
 
-
-    def locked_dropout(self, x, p: float=0.0):
-        if (not self.training) or (not p):
-            return x
-        mask = x.new_empty(
-            1, x.size(1), requires_grad=False
-        ).bernoulli_(1 - p).div_(1 - p).expand_as(x)
-        return x * mask
+        self.dropout = nn.Dropout(self.dec_mid_dropout)
 
 
-    def forward(self, prev_e, prev_c, prev_h, mask_ec=None, mask_h=None):
+    def forward(self, prev_e, prev_c, prev_h):
         """
             Args:
                 prev_e: (batch_size, dec_emb_dim) character embeddings, previous step
@@ -325,18 +349,16 @@ class AutoRegDecoderLSTMCell(nn.Module):
         # original inputs: character emb & context from last time step
         prev_ec = torch.cat([prev_e, prev_c], dim=1)
         # (batch_size, dec_emb_dim + proj_dim)
-        if self.training and mask_ec is not None:
-            prev_ec *= mask_ec
 
         # iterate
         for i in range(len(self.lstms)):
-            prev_h[i] = self.lstms[i](prev_ec, prev_h[i])
+            (h, c) = self.lstms[i](prev_ec, prev_h[i])
+            h = self.dropout(h)
+            prev_h[i] = (h, c)
             # apply only to the output of the 1st lstm cell
             if i == 0:
                 # encode respectivly
                 prev_ec = prev_h[i][0]
-                if self.training and mask_h is not None:
-                    prev_ec *= mask_h
 
         return prev_h
         # List[(h, c)]

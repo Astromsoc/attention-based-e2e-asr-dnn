@@ -8,11 +8,11 @@ EXP_FOLDER: experiments
 # training
 # ------------------------------------------------
 seed: 11785
-epochs: 200
+epochs: 100
 batch_size: 96
 num_workers: 15
 accu_grad: 1
-grad_norm: 10.0
+grad_norm: 5.0
 eval_ld_interval: 1
 init_force: false
 tf_rate: 1.0
@@ -24,15 +24,15 @@ use_specaug: false
 wandb:
   use: true
   configs:
-    project: hw4-full
+    project: 
     reinit: true
-    entity: Astromsoc
+    entity: 
     
 # finetuning
 # ------------------------------------------------
 finetune:
   use: false
-  checkpoint: experiments/logical-donkey-23/ckpts/minloss-epoch[179].pt
+  checkpoint: 
 
 
 # configurations to train the model
@@ -46,21 +46,21 @@ model:
       lstm_layers: 1
       plstm_layers: 3
       bidirectional: true
-      init_dropout: 0.35
-      mid_dropout: 0.35
-      final_dropout: 0.4
+      init_dropout: 0.3
+      mid_dropout: 0.3
+      final_dropout: 0.3
     speller_configs:
       # encoder + attention
       att_proj_dim: 256
       att_heads: 1
-      att_dropout: 0.3
+      att_dropout: 0.0
       # decoder embeddings
-      dec_emb_dim: 256
-      dec_emb_dropout: 0.3
+      dec_emb_dim: 512
+      dec_emb_dropout: 0.0
       # decoder lstm cells
       dec_lstm_hid_dim: 512
       dec_lstm_out_dim: 256
-      dec_lstm_dropout: 0.2
+      dec_lstm_dropout: 0.0
       # trivials
       CHR_MAX_STEPS: 600
       USE_GREEDY: true
@@ -85,24 +85,23 @@ batch_scheduler:
 
 # epoch scheduler
 epoch_scheduler:
-  use: true
+  use: false
 
 # tf rate scheduler
 tf_rate_scheduler:
-  use: true
+  use: false
   configs:
     factor: 0.05
     interval: 5
 
 # dropout scheduler
 dropout_scheduler:
-  use: true
+  use: false
   configs:
-    0: 0.01
-    30: 80
-    50: 1.25
-    75: 0.8
-    85: 0.8
+    0: 1
+    30: 2
+    60: 1.5
+    80: 0.8
     95: 0.8
     105: 1.25
 
