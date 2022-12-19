@@ -1,0 +1,21 @@
+# filepaths
+TST_DIR: experiments/lunar-grass-111/ckpts/minloss-epoch[298]-pred-test.csv
+TST_FOLDER: data/train-clean-100
+
+# checkpoints
+exp_folder: experiments-lm/sunny-capybara-10
+use_greedy: true
+
+# trivials
+batch_size: 400
+num_workers: 15
+
+# loading options
+run_all: false
+
+# IF NOT run all
+epoch_num: 34
+# make sure it exists under ckpts/ folder
+
+# whether to load averages
+run_avg: false

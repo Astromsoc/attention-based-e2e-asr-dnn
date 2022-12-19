@@ -1,0 +1,99 @@
+# filepaths
+# ------------------------------------------------
+TRN_FOLDER: data/train-clean-100/transcript/raw
+DEV_FOLDER: data/dev-clean/transcript/raw
+TST_FOLDER: data/test-clean
+EXP_FOLDER: experiments-lm
+
+TRN_PRED_DIR: experiments/lunar-grass-111/ckpts/minloss-epoch[298]-pred-train.csv
+DEV_PRED_DIR: experiments/lunar-grass-111/ckpts/minloss-epoch[298]-pred-dev.csv
+
+# training
+# ------------------------------------------------
+seed: 11785
+epochs: 50
+batch_size: 64
+num_workers: 15
+accu_grad: 2
+grad_norm: 10.0
+eval_ld_interval: 1
+tf_rate: 1.0
+max_savings: 1
+init_force: false
+
+# wandb
+# ------------------------------------------------
+wandb:
+  use: true
+  configs:
+    project: 
+    reinit: true
+    entity: 
+    
+# finetuning
+# ------------------------------------------------
+finetune:
+  use: false
+  reinit_lr: true
+  checkpoint: 
+
+# configurations to train the model
+# ------------------------------------------------
+model:
+  tag: base-Rewriter
+  configs:
+    # embeddings
+    emb_dim: 256
+    # encoders
+    enc_lstm_layers: 2
+    enc_lstm_hid_dim: 256
+    enc_dropouts: 
+      - 0.2
+      - 0.2
+    # attention
+    att_proj_dim: 128
+    att_heads: 1
+    att_dropout: 0.2
+    # decoder: 2 LSTM cells (similar to speller)
+    dec_lstm_layers: 2
+    dec_lstm_hid_dim: 256
+    dec_lstm_out_dim: 128
+    dec_lstm_dropout: 0.2
+    # trivials
+    CHR_MAX_STEPS: 600
+
+
+# optimizer
+optimizer:
+  name: adamw
+  configs:
+    lr: 0.005
+    weight_decay: 5.0e-6
+    amsgrad: true
+
+# scalar
+scaler:
+  use: true
+
+# batch scheduler
+batch_scheduler:
+  use: false
+  configs:
+    warmup_epochs: 0.5
+
+# epoch scheduler
+epoch_scheduler:
+  use: true
+
+# tf rate scheduler
+tf_rate_scheduler:
+  use: false
+  configs:
+    factor: 0.05
+    interval: 5
+
+# dropout scheduler
+dropout_scheduler:
+  use: false
+  configs:
+    0: 1.0
