@@ -93,8 +93,7 @@ class datasetTrainDev(Dataset):
 
     
     def collate_fn(
-        self, batch, mfcc_padding=0, trans_padding=0, 
-        freq_transforms=False, 
+        self, batch, mfcc_padding=0, trans_padding=29
     ):
         """
             Collate function for training and dev sets, 4 returns

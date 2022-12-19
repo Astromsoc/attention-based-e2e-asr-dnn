@@ -93,6 +93,9 @@ class Trainer:
         if self.trncfgs.finetune.use:
             self.load_model()
             self.reset_beststats()
+        if self.trncfgs.finetune.reinit_lr:
+            for pg in self.optimizer.param_groups:
+                pg['lr'] = self.trncfgs.optimizer.configs['lr']
 
 
     def train_epoch(self):
@@ -428,7 +431,9 @@ class Trainer:
     
 
     def tf_rate_step(self):
-        if self.epoch > 0 and self.dev['ld'] and self.dev['ld'][-1] <= 20 and self.tf_rate > 0.6:
+        if (self.epoch > 0 
+            and self.dev['ld'] and self.dev['ld'][-1] <= 20 
+            and self.tf_rate > self.tf_configs['lowest']):
             if self.epoch % self.tf_configs['interval'] == 0:
                 self.tf_rate -= self.tf_configs['factor']
     
