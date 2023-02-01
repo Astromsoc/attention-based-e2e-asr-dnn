@@ -35,6 +35,7 @@ class Trainer:
             scaler,
             tf_rate,
             saving_dir,
+            milestone_dir,
             device,
             accu_grad: int=3,
             grad_norm: float=5.0,
@@ -50,8 +51,10 @@ class Trainer:
         self.criterion = criterion
         self.scaler = scaler
         self.tf_rate = tf_rate
+        self.last_tf_turn = (-1, float('inf'))
         self.accu_grad = accu_grad
         self.saving_dir = saving_dir
+        self.milestone_dir = milestone_dir
         self.device = device
         self.accu_grad = accu_grad
         self.grad_norm = grad_norm
@@ -78,7 +81,7 @@ class Trainer:
             **(self.trncfgs.batch_scheduler.configs)
         ) if self.trncfgs.batch_scheduler.use else None
         self.epoch_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, factor=0.5, patience=4, mode='min'
+            self.optimizer, factor=0.5, patience=3, mode='min'
         ) if self.trncfgs.epoch_scheduler.use else None
         # tf rate scheduler
         if self.trncfgs.tf_rate_scheduler.use:
@@ -117,7 +120,7 @@ class Trainer:
             # build masks
             y_mask = (torch.arange(0, dec_max_len, dtype=torch.int64)
                            .unsqueeze(0).expand(batch_size, dec_max_len))           # (batch_size, dec_max_len)
-            y_mask = y_mask < y_mask.new(ly).unsqueeze(-1)                         # (batch_size, dec_max_len)
+            y_mask = y_mask < y_mask.new(ly).unsqueeze(-1)                          # (batch_size, dec_max_len)
             y_mask = y_mask.to(self.device).flatten().to(torch.int)
             y_nonpadded_sum = y_mask.sum()
             # take to device
@@ -163,15 +166,19 @@ class Trainer:
                 # clip gradient norm
                 grad_norm = nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.grad_norm
-                )
-                if math.isnan(grad_norm):
-                    print(f"Gradient seems to explode[batch={self.batch}]. No params udpate.")
+                )   
+                """
+                    TODO: check full logics of unscale_ implementation
+                        https://github.com/pytorch/pytorch/blob/master/torch/cuda/amp/grad_scaler.py
+                """
+                # if math.isnan(grad_norm):
+                #     print(f"Gradient seems to explode at [batch={self.batch}]. No params udpate.")
+                # else:
+                if self.scaler:
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                 else:
-                    if self.scaler:
-                        self.scaler.step(self.optimizer)
-                        self.scaler.update()
-                    else:
-                        self.optimizer.step()
+                    self.optimizer.step()
                 # clear and start over
                 self.optimizer.zero_grad()
                 # learning rate updates
@@ -313,6 +320,7 @@ class Trainer:
 
     def save_model(self):
         tag = 'min'
+        save_for_rewriter = True if (self.epoch > 0 and (self.epoch + 1) % 10 == 0) else False
         epoch_record = {
             'epoch': self.epoch, 'batch': self.batch, 
             'loss': self.dev['loss'][-1], 'ld': self.dev['ld'][-1], 'ppl': self.dev['ppl'][-1]
@@ -331,9 +339,9 @@ class Trainer:
             self.min_ppl.update(epoch_record)
             tag += '-ppl'
         # save model checkpoints (just once)
-        if len(tag) > 3:
+        if len(tag) > 3 or save_for_rewriter:
             # remove extra if exceeding
-            if len(self.saved_epochs) >= self.trncfgs.max_savings:
+            if len(tag) > 3 and len(self.saved_epochs) >= self.trncfgs.max_savings:
                 # remove the earliest model
                 ckpts = os.listdir(f"{self.saving_dir}/ckpts")
                 no = self.saved_epochs.pop(0)
@@ -349,9 +357,16 @@ class Trainer:
                 'train_loss': self.train['loss'], 'train_ppl': self.train['ppl'], 
                 'dev_loss': self.dev['loss'], 'dev_ppl': self.dev['ppl'], 'dev_ld': self.dev['ld']
             })
-            torch.save(epoch_record, f"{self.saving_dir}/ckpts/minloss-epoch[{self.epoch}].pt")
-            self.saved_epochs.append(self.epoch)
-            print(f"\nBest model saved: epoch[{self.epoch}], tag=[{tag}]\n")
+            # saving best models
+            if len(tag) > 3:
+                torch.save(epoch_record, f"{self.saving_dir}/ckpts/{tag}-epoch[{self.epoch}].pt")
+                self.saved_epochs.append(self.epoch)
+                print(f"\nBest model saved: epoch[{self.epoch}], tag=[{tag}]\n")
+            # saving milestone models
+            if save_for_rewriter:
+                torch.save(epoch_record, f"{self.milestone_dir}/epoch[{self.epoch}].pt")
+                print(f"\nMilestone model archived: epoch[{self.epoch}]\n")
+            
     
 
     def load_model(self):
@@ -373,7 +388,7 @@ class Trainer:
         self.dev['ppl'] = loaded.get('dev_ppl', list())
         self.dev['ld'] = loaded.get('dev_ld', list())
         print(f"\n\nSuccessfully loaded from checkpoint [{self.trncfgs.finetune.checkpoint}]!")
-        print(f"Resuming traninig from epoch[{self.epoch}]!\n\n")
+        print(f"Resuming training from epoch[{self.epoch}]!\n\n")
     
 
     @staticmethod
@@ -432,10 +447,13 @@ class Trainer:
 
     def tf_rate_step(self):
         if (self.epoch > 0 
-            and self.dev['ld'] and self.dev['ld'][-1] <= 20 
+            and self.dev['ld'] and self.dev['ld'][-1] <= 20
             and self.tf_rate > self.tf_configs['lowest']):
-            if self.epoch % self.tf_configs['interval'] == 0:
+            if (self.epoch - self.last_tf_turn[0] > self.tf_configs['interval']
+                and self.dev['ld'][-1] < self.last_tf_turn[1]):
+                # record this change
                 self.tf_rate -= self.tf_configs['factor']
+                self.last_tf_turn = (self.epoch, self.dev['ld'][-1])
     
 
     def dropout_step(self):
@@ -504,6 +522,7 @@ def main(args):
         tgt_folder = wandb.run.name
     tgt_folder = f"{trncfgs.EXP_FOLDER}/{tgt_folder}"
     os.makedirs(tgt_folder, exist_ok=True)
+    os.makedirs(trncfgs.MST_FOLDER, exist_ok=True)
     # save the configuration copy into the folder
     json.dump(trncfgs_dict, open(f"{tgt_folder}/config.json", 'w'), indent=4)
     # subdirectories
@@ -597,8 +616,8 @@ def main(args):
     trainer = Trainer(
         model=model, vocab=VOCAB, trn_loader=trnLoader, dev_loader=devLoader,
         trncfgs=trncfgs, criterion=criterion, scaler=scaler, 
-        tf_rate=trncfgs.tf_rate, saving_dir=tgt_folder, device=device, 
-        accu_grad=trncfgs.accu_grad, grad_norm=trncfgs.grad_norm, 
+        tf_rate=trncfgs.tf_rate, saving_dir=tgt_folder, milestone_dir=trncfgs.MST_FOLDER, 
+        device=device, accu_grad=trncfgs.accu_grad, grad_norm=trncfgs.grad_norm, 
         eval_ld_interval=trncfgs.eval_ld_interval,
         SOS_IDX=VOCAB_MAP['[SOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<sos>'], 
         EOS_IDX=VOCAB_MAP['[EOS]'] if trncfgs.TRN_FOLDER.startswith('mini') else VOCAB_MAP['<eos>']
@@ -623,7 +642,7 @@ if __name__ == '__main__':
         '--config-file',
         '-c',
         type=str,
-        default='./config/sample_attention.yml',
+        default='./config/sample-attention.yml',
         help='filepath to the configuration file.'
     )
 

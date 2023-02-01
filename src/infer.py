@@ -34,12 +34,11 @@ def idx_to_str(idx_seq, vocab: list, sos_idx: int, eos_idx: int):
 
 
 def infer_one_checkpoint(
-        model_cfgs, tstcfgs, checkpoint_filepath, tst_loader, 
+        model_cfgs, infcfgs, checkpoint_filepath, loader, tag,
         template_filepath, scaler, device, VOCAB, SOS_IDX, EOS_IDX
     ):
 
     print(f"\n\nRunning inference on checkpoint [{checkpoint_filepath}]...\n")
-
     # reconstruct the model
     model = ListenAttendSpell(**model_cfgs.model.configs)
 
@@ -52,7 +51,7 @@ def infer_one_checkpoint(
     all_preds = list()
 
     # iterate over batches
-    for b, batch in tqdm(enumerate(tst_loader), total=len(tst_loader)):
+    for b, batch in tqdm(enumerate(loader), total=len(loader)):
         x, lx = batch
         x = x.to(device)
 
@@ -63,12 +62,17 @@ def infer_one_checkpoint(
             pred_logits, att_wgts = model(x, lx)
 
         # obtain batch predictions
-        if tstcfgs.use_greedy:
+        if infcfgs.use_greedy:
             batch_preds = [idx_to_str(pl.argmax(-1), VOCAB, SOS_IDX, EOS_IDX) for pl in pred_logits]
         all_preds.extend(batch_preds)
 
     # output csv filename: adapted from checkpoint name
-    out_filepath = checkpoint_filepath.replace('.pt', '-pred.csv')
+    out_filepath = checkpoint_filepath.replace('.pt', f'-{tag}.csv').replace('ckpts', 'preds')
+    # check existence of output folder
+    out_folder = out_filepath.rsplit('/', 1)[0]
+    if not os.path.exists(out_folder):
+        os.makedirs(out_folder)
+
     # generate csv file
     raw_df = pd.read_csv(template_filepath)
     raw_df.label = all_preds
@@ -80,8 +84,8 @@ def infer_one_checkpoint(
 
 
 def main(args):
-    tstcfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
-    exp_folder = tstcfgs.exp_folder
+    infcfgs = cfgClass(yaml.safe_load(open(args.config_file, 'r')))
+    exp_folder = infcfgs.exp_folder
 
     # find the device
     device = (
@@ -105,25 +109,29 @@ def main(args):
     """
 
     if use_mini:
-        tstDataset = datasetTestToy(stdDir=tstcfgs.TST_FOLDER)
-        tstLoader = DataLoader(
-            tstDataset,
-            batch_size=tstcfgs.batch_size,
-            num_workers=tstcfgs.num_workers,
-            collate_fn=tstDataset.collate_fn
+        someDataset = datasetTestToy(stdDir=infcfgs.SOME_FOLDER)
+        someLoader = DataLoader(
+            someDataset,
+            batch_size=infcfgs.batch_size,
+            num_workers=infcfgs.num_workers,
+            collate_fn=someDataset.collate_fn
         )
 
-    tstDataset = datasetTest(stdDir=tstcfgs.TST_FOLDER)
-    tstLoader = DataLoader(
-        tstDataset,
-        batch_size=tstcfgs.batch_size,
-        num_workers=tstcfgs.num_workers,
-        collate_fn=tstDataset.collate_fn
+    someDataset = datasetTest(stdDir=infcfgs.SOME_FOLDER)
+    someLoader = DataLoader(
+        someDataset,
+        batch_size=infcfgs.batch_size,
+        num_workers=infcfgs.num_workers,
+        collate_fn=someDataset.collate_fn
     )
-    print(f"\nA total of [{len(tstLoader)}] batches in test set.\n")
+    tag = 'trn' if 'train' in infcfgs.SOME_FOLDER else 'dev' if 'dev' in infcfgs.SOME_FOLDER else 'tst'
+    print(f"\nA total of [{len(someLoader)}] batches in test set.\n")
 
     # load the template for test answer generation
-    test_template_filepath = f"{tstcfgs.TST_FOLDER}/transcript/random_submission.csv"
+    template_filepath = f"{infcfgs.SOME_FOLDER}/transcript/random_submission.csv"
+    if not os.path.exists(template_filepath):
+        template_filepath = f"{infcfgs.SOME_FOLDER}/transcript/processed.csv"
+    assert os.path.exists(template_filepath)
 
     # build scaler
     scaler = torch.cuda.amp.GradScaler() if device.startswith("cuda") else None
@@ -132,22 +140,22 @@ def main(args):
     ckpts = [f for f in os.listdir(f"{exp_folder}/ckpts") if f.endswith('.pt')]
 
     # experiments
-    if tstcfgs.run_all:
+    if infcfgs.run_all:
         for fp in ckpts:
             infer_one_checkpoint(
-                model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
-                tst_loader=tstLoader, template_filepath=test_template_filepath,
+                model_cfgs=model_cfgs, infcfgs=infcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
+                loader=someLoader, template_filepath=template_filepath, tag=tag,
                 scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
             )
-    elif f"-epoch[{tstcfgs.epoch_num}].pt" in ' '.join(ckpts):
-        fp = [f for f in ckpts if f.endswith(f"-epoch[{tstcfgs.epoch_num}].pt")][0]
+    elif f"-epoch[{infcfgs.epoch_num}].pt" in ' '.join(ckpts):
+        fp = [f for f in ckpts if f.endswith(f"-epoch[{infcfgs.epoch_num}].pt")][0]
         infer_one_checkpoint(
-            model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
-            tst_loader=tstLoader, template_filepath=test_template_filepath,
+            model_cfgs=model_cfgs, infcfgs=infcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/{fp}", 
+            loader=someLoader, template_filepath=template_filepath, tag=tag,
             scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
         )
     
-    if tstcfgs.run_avg:
+    if infcfgs.run_avg:
         model = ListenAttendSpell(**model_cfgs.model.configs)
         base_dict = dict(model.named_parameters())
         state_dict = dict()
@@ -164,8 +172,8 @@ def main(args):
         torch.save({'model_state_dict': base_dict}, f"{exp_folder}/ckpts/avg-all.pt")
         # run
         infer_one_checkpoint(
-            model_cfgs=model_cfgs, tstcfgs=tstcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/avg-all.pt", 
-            tst_loader=tstLoader, template_filepath=test_template_filepath,
+            model_cfgs=model_cfgs, infcfgs=infcfgs, checkpoint_filepath=f"{exp_folder}/ckpts/avg-all.pt", 
+            loader=someLoader, template_filepath=template_filepath, tag=tag,
             scaler=scaler, device=device, VOCAB=VOCAB, EOS_IDX=EOS_IDX, SOS_IDX=SOS_IDX
         )
 

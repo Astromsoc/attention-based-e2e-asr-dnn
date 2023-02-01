@@ -4,18 +4,19 @@ TRN_FOLDER: data/train-clean-100
 DEV_FOLDER: data/dev-clean
 TST_FOLDER: data/test-clean
 EXP_FOLDER: experiments
+MST_FOLDER: milestones
 
 # training
 # ------------------------------------------------
 seed: 11785
 epochs: 200
 batch_size: 96
-num_workers: 15
+num_workers: 8
 accu_grad: 1
 grad_norm: 5.0
 eval_ld_interval: 1
 init_force: false
-tf_rate: 0.5
+tf_rate: 0.50
 max_savings: 3
 use_specaug: true
 
@@ -24,16 +25,16 @@ use_specaug: true
 wandb:
   use: true
   configs:
-    project:
+    project: rewriter-test
     reinit: true
-    entity: 
+    entity: Astromsoc
     
 # finetuning
 # ------------------------------------------------
 finetune:
   use: true
-  reinit_lr: false
-  checkpoint: 
+  reinit_lr: true
+  checkpoint: experiments/virtuous-fireworks-9/ckpts/min-ld-epoch[83].pt
 
 
 # configurations to train the model
@@ -47,9 +48,9 @@ model:
       lstm_layers: 1
       plstm_layers: 3
       bidirectional: true
-      init_dropout: 0.2
-      mid_dropout: 0.2
-      final_dropout: 0.2
+      init_dropout: 0.3
+      mid_dropout: 0.3
+      final_dropout: 0.35
     speller_configs:
       # encoder + attention
       att_proj_dim: 256
@@ -61,7 +62,7 @@ model:
       # decoder lstm cells
       dec_lstm_hid_dim: 512
       dec_lstm_out_dim: 256
-      dec_lstm_dropout: 0.2
+      dec_lstm_dropout: 0.3
       # trivials
       CHR_MAX_STEPS: 600
       USE_GREEDY: true
@@ -70,7 +71,7 @@ model:
 optimizer:
   name: adamw
   configs:
-    lr: 0.001
+    lr: 0.0005
     weight_decay: 5.0e-6
     amsgrad: true
 
@@ -78,23 +79,23 @@ optimizer:
 scaler:
   use: true
 
-# batch scheduler
+# batch learning rate scheduler
 batch_scheduler:
   use: false
   configs:
     warmup_epochs: 0.5
 
-# epoch scheduler
+# epoch learning rate scheduler
 epoch_scheduler:
   use: true
 
 # tf rate scheduler
 tf_rate_scheduler:
-  use: false
+  use: true
   configs:
-    factor: 0.01
-    interval: 1
-    lowest: 0.65
+    factor: 0.10
+    interval: 10
+    lowest: 0.60
 
 # dropout scheduler
 dropout_scheduler:
