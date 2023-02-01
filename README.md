@@ -9,9 +9,9 @@ For the project: Attention-based End-to-End Speech-to-Text Deep Neural Network, 
 
 **Wandb Projects**: [full experiments](https://wandb.ai/astromsoc/785-hw4-full/overview);
 [test experiments](https://wandb.ai/astromsoc/785-hw4-test/overview);
-[rewriter experiments](https://wandb.ai/astromsoc/785-hw4-rewriter/overview)
+[rewriter experiments](https://wandb.ai/astromsoc/785-hw4-rewriter/overview); [follow-up full pipeline experiment](https://wandb.ai/astromsoc/rewriter?workspace=user-astromsoc)
 
-**Github Repo**: [Click Here](https://github.com/Astromsoc/attention-based-e2e-asr-dnn) (will be made public after the end of this semester, as is required) 
+<!-- **Github Repo**: [Click Here](https://github.com/Astromsoc/attention-based-e2e-asr-dnn) (will be made public after the end of this semester, as is required)  -->
 
 
 ### Repository Structure
@@ -140,4 +140,15 @@ LD descended to `~7.356`.
 #### Stage 6. Finetuning: tf-rate 0.6 --> 0.5, dropouts 0.3 --> 0.2 (no obvious improvements)
 *exp: eabsurd-microwave-121*
 
-LD oscillates around `~7.5`.
+LD oscillated around `~7.5`.
+
+
+
+**Another**: all-in-one training for *approximately* similar results
+
+- constant dropout rates
+- start off with a tf rate of 0.9
+- turn tf rate down by 0.1 every 10 epochs if reaching below the minimum LD achieved with the previous tf rate
+- learning rate fixed at `0.001` (could pair with an epoch scheduler for further finetuning)
+
+The follow-up full pipeline experiment achieved an LD of `~7.4`.
